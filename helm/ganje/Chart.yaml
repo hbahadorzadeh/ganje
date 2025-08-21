@@ -1,0 +1,19 @@
+apiVersion: v2
+name: ganje
+description: A universal artifact repository manager
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - artifact
+  - repository
+  - maven
+  - npm
+  - docker
+  - pypi
+home: https://github.com/hbahadorzadeh/ganje
+sources:
+  - https://github.com/hbahadorzadeh/ganje
+maintainers:
+  - name: Hamed Bahadorzadeh
+    email: hamed@example.com

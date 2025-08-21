@@ -1,0 +1,63 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ganje.fullname" . }}-config
+  labels:
+    {{- include "ganje.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    server:
+      host: "0.0.0.0"
+      port: {{ .Values.service.port }}
+
+    database:
+      driver: {{ .Values.database.driver | quote }}
+      host: {{ .Values.database.host | quote }}
+      port: {{ .Values.database.port }}
+      username: {{ .Values.database.username | quote }}
+      password: {{ .Values.database.password | quote }}
+      database: {{ .Values.database.database | quote }}
+      ssl_mode: {{ .Values.database.sslMode | quote }}
+
+    storage:
+      type: {{ .Values.storage.type | quote }}
+      local_path: {{ .Values.storage.localPath | quote }}
+
+    auth:
+      oauth_server: {{ .Values.auth.oauthServer | quote }}
+      jwt_secret: {{ .Values.auth.jwtSecret | quote }}
+      realms:
+        {{- range .Values.auth.realms }}
+        - name: {{ .name | quote }}
+          permissions:
+            {{- range .permissions }}
+            - {{ . | quote }}
+            {{- end }}
+        {{- end }}
+
+    logging:
+      level: {{ .Values.logging.level | quote }}
+      format: {{ .Values.logging.format | quote }}
+      output: {{ .Values.logging.output | quote }}
+
+    metrics:
+      enabled: {{ .Values.metrics.enabled }}
+      path: {{ .Values.metrics.path | quote }}
+      separate_server: {{ .Values.metrics.separateServer }}
+      port: {{ .Values.metrics.port }}
+
+    repositories:
+      {{- range .Values.repositories }}
+      - name: {{ .name | quote }}
+        type: {{ .type | quote }}
+        artifact_type: {{ .artifactType | quote }}
+        {{- if .url }}
+        url: {{ .url | quote }}
+        {{- end }}
+        {{- if .upstream }}
+        upstream:
+          {{- range .upstream }}
+          - {{ . | quote }}
+          {{- end }}
+        {{- end }}
+      {{- end }}

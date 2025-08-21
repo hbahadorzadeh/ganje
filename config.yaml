@@ -1,0 +1,156 @@
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+database:
+  driver: "postgres"
+  host: "localhost"
+  port: 5432
+  username: "ganje"
+  password: "password"
+  database: "ganje"
+  ssl_mode: "disable"
+
+storage:
+  type: "local"
+  local_path: "/var/lib/ganje/storage"
+
+auth:
+  oauth_server: "https://auth.example.com"
+  jwt_secret: "your-jwt-secret-key-here"
+  realms:
+    - name: "developers"
+      permissions: ["read", "write"]
+    - name: "admins"
+      permissions: ["admin"]
+    - name: "readonly"
+      permissions: ["read"]
+
+logging:
+  level: "info"
+  format: "json"
+  output: "stdout"
+
+metrics:
+  enabled: true
+  path: "/metrics"
+  separate_server: false
+  port: 9090
+
+repositories:
+  - name: "maven-central"
+    type: "remote"
+    artifact_type: "maven"
+    url: "https://repo1.maven.org/maven2"
+    
+  - name: "maven-local"
+    type: "local"
+    artifact_type: "maven"
+    
+  - name: "npm-registry"
+    type: "remote"
+    artifact_type: "npm"
+    url: "https://registry.npmjs.org"
+    
+  - name: "npm-local"
+    type: "local"
+    artifact_type: "npm"
+    
+  - name: "docker-hub"
+    type: "remote"
+    artifact_type: "docker"
+    url: "https://registry-1.docker.io"
+    
+  - name: "docker-local"
+    type: "local"
+    artifact_type: "docker"
+    
+  - name: "pypi-remote"
+    type: "remote"
+    artifact_type: "pypi"
+    url: "https://pypi.org"
+    
+  - name: "pypi-local"
+    type: "local"
+    artifact_type: "pypi"
+    
+  - name: "helm-stable"
+    type: "remote"
+    artifact_type: "helm"
+    url: "https://charts.helm.sh/stable"
+    
+  - name: "helm-local"
+    type: "local"
+    artifact_type: "helm"
+    
+  - name: "go-proxy"
+    type: "remote"
+    artifact_type: "golang"
+    url: "https://proxy.golang.org"
+    
+  - name: "go-local"
+    type: "local"
+    artifact_type: "golang"
+    
+  - name: "cargo-registry"
+    type: "remote"
+    artifact_type: "cargo"
+    url: "https://crates.io"
+    
+  - name: "cargo-local"
+    type: "local"
+    artifact_type: "cargo"
+    
+  - name: "nuget-gallery"
+    type: "remote"
+    artifact_type: "nuget"
+    url: "https://api.nuget.org/v3-flatcontainer"
+    
+  - name: "nuget-local"
+    type: "local"
+    artifact_type: "nuget"
+    
+  - name: "rubygems-org"
+    type: "remote"
+    artifact_type: "rubygems"
+    url: "https://rubygems.org"
+    
+  - name: "rubygems-local"
+    type: "local"
+    artifact_type: "rubygems"
+    
+  - name: "ansible-galaxy"
+    type: "remote"
+    artifact_type: "ansible"
+    url: "https://galaxy.ansible.com"
+    
+  - name: "ansible-local"
+    type: "local"
+    artifact_type: "ansible"
+    
+  - name: "terraform-registry"
+    type: "remote"
+    artifact_type: "terraform"
+    url: "https://registry.terraform.io"
+    
+  - name: "terraform-local"
+    type: "local"
+    artifact_type: "terraform"
+    
+  - name: "generic-local"
+    type: "local"
+    artifact_type: "generic"
+    
+  - name: "canon-local"
+    type: "local"
+    artifact_type: "canon"
+    
+  - name: "maven-virtual"
+    type: "virtual"
+    artifact_type: "maven"
+    upstream: ["maven-local", "maven-central"]
+    
+  - name: "npm-virtual"
+    type: "virtual"
+    artifact_type: "npm"
+    upstream: ["npm-local", "npm-registry"]

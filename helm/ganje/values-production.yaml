@@ -1,0 +1,221 @@
+# Production values for ganje
+replicaCount: 3
+
+image:
+  repository: ganje
+  pullPolicy: Always
+  tag: "1.0.0"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8080"
+  prometheus.io/path: "/metrics"
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1001
+  runAsGroup: 1001
+  fsGroup: 1001
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1001
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-body-size: "500m"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  hosts:
+    - host: artifacts.yourdomain.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: ganje-tls-secret
+      hosts:
+        - artifacts.yourdomain.com
+
+resources:
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+  requests:
+    cpu: 500m
+    memory: 512Mi
+
+# Health check configuration
+healthCheck:
+  enabled: true
+  path: /health
+  startupProbe:
+    initialDelaySeconds: 15
+    periodSeconds: 5
+    timeoutSeconds: 5
+    failureThreshold: 60
+  livenessProbe:
+    initialDelaySeconds: 0
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 3
+  readinessProbe:
+    initialDelaySeconds: 0
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector:
+  node-type: compute-optimized
+
+tolerations:
+  - key: "dedicated"
+    operator: "Equal"
+    value: "ganje"
+    effect: "NoSchedule"
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      podAffinityTerm:
+        labelSelector:
+          matchExpressions:
+          - key: app.kubernetes.io/name
+            operator: In
+            values:
+            - ganje
+        topologyKey: kubernetes.io/hostname
+
+# Persistent Volume Claim
+persistence:
+  enabled: true
+  storageClass: "ganje-storage"
+  accessMode: ReadWriteOnce
+  size: 100Gi
+  mountPath: /var/lib/ganje/storage
+
+# Database configuration
+database:
+  driver: postgres
+  host: postgres.production.com
+  port: 5432
+  username: ganje_prod
+  password: secure-production-password
+  database: ganje_prod
+  sslMode: require
+
+# Storage configuration
+storage:
+  type: local
+  localPath: /var/lib/ganje/storage
+
+# Authentication configuration
+auth:
+  oauthServer: "https://auth.yourdomain.com"
+  jwtSecret: "production-jwt-secret-key-change-me"
+  realms:
+    - name: "developers"
+      permissions: ["read", "write"]
+    - name: "admins"
+      permissions: ["admin"]
+    - name: "readonly"
+      permissions: ["read"]
+    - name: "ci-cd"
+      permissions: ["read", "write"]
+
+# Logging configuration
+logging:
+  level: info
+  format: json
+  output: stdout
+
+# Metrics configuration
+metrics:
+  enabled: true
+  path: /metrics
+  separateServer: true
+  port: 9090
+  serviceMonitor:
+    enabled: true
+    namespace: monitoring
+    interval: 15s
+    scrapeTimeout: 10s
+
+# Repository configurations
+repositories:
+  - name: "maven-central"
+    type: "remote"
+    artifactType: "maven"
+    url: "https://repo1.maven.org/maven2"
+  - name: "maven-local"
+    type: "local"
+    artifactType: "maven"
+  - name: "npm-registry"
+    type: "remote"
+    artifactType: "npm"
+    url: "https://registry.npmjs.org"
+  - name: "npm-local"
+    type: "local"
+    artifactType: "npm"
+  - name: "docker-hub"
+    type: "remote"
+    artifactType: "docker"
+    url: "https://registry-1.docker.io"
+  - name: "docker-local"
+    type: "local"
+    artifactType: "docker"
+  - name: "pypi-remote"
+    type: "remote"
+    artifactType: "pypi"
+    url: "https://pypi.org"
+  - name: "pypi-local"
+    type: "local"
+    artifactType: "pypi"
+  - name: "helm-stable"
+    type: "remote"
+    artifactType: "helm"
+    url: "https://charts.helm.sh/stable"
+  - name: "helm-local"
+    type: "local"
+    artifactType: "helm"
+  - name: "generic-local"
+    type: "local"
+    artifactType: "generic"
+  - name: "maven-virtual"
+    type: "virtual"
+    artifactType: "maven"
+    upstream: ["maven-local", "maven-central"]
+  - name: "npm-virtual"
+    type: "virtual"
+    artifactType: "npm"
+    upstream: ["npm-local", "npm-registry"]

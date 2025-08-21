@@ -1,0 +1,181 @@
+# Default values for ganje
+replicaCount: 1
+
+image:
+  repository: ganje
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  fsGroup: 1001
+
+securityContext:
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1001
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+  hosts:
+    - host: ganje.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 250m
+    memory: 256Mi
+
+# Health check configuration
+healthCheck:
+  enabled: true
+  path: /health
+  startupProbe:
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 30
+  livenessProbe:
+    initialDelaySeconds: 0
+    periodSeconds: 30
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe:
+    initialDelaySeconds: 0
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 100
+  targetCPUUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# Persistent Volume Claim
+persistence:
+  enabled: true
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 10Gi
+  mountPath: /var/lib/ganje/storage
+
+# Database configuration
+database:
+  driver: postgres
+  host: postgresql
+  port: 5432
+  username: ganje
+  password: password
+  database: ganje
+  sslMode: disable
+
+# Storage configuration
+storage:
+  type: local
+  localPath: /var/lib/ganje/storage
+
+# Authentication configuration
+auth:
+  oauthServer: "https://auth.example.com"
+  jwtSecret: "your-jwt-secret-key-here"
+  realms:
+    - name: "developers"
+      permissions: ["read", "write"]
+    - name: "admins"
+      permissions: ["admin"]
+    - name: "readonly"
+      permissions: ["read"]
+
+# Logging configuration
+logging:
+  level: info
+  format: json
+  output: stdout
+
+# Metrics configuration
+metrics:
+  enabled: true
+  path: /metrics
+  separateServer: false
+  port: 9090
+  serviceMonitor:
+    enabled: false
+    namespace: ""
+    interval: 30s
+    scrapeTimeout: 10s
+
+# Repository configurations
+repositories:
+  - name: "maven-central"
+    type: "remote"
+    artifactType: "maven"
+    url: "https://repo1.maven.org/maven2"
+  - name: "maven-local"
+    type: "local"
+    artifactType: "maven"
+  - name: "npm-registry"
+    type: "remote"
+    artifactType: "npm"
+    url: "https://registry.npmjs.org"
+  - name: "npm-local"
+    type: "local"
+    artifactType: "npm"
+  - name: "docker-hub"
+    type: "remote"
+    artifactType: "docker"
+    url: "https://registry-1.docker.io"
+  - name: "docker-local"
+    type: "local"
+    artifactType: "docker"
+  - name: "pypi-remote"
+    type: "remote"
+    artifactType: "pypi"
+    url: "https://pypi.org"
+  - name: "pypi-local"
+    type: "local"
+    artifactType: "pypi"
+  - name: "generic-local"
+    type: "local"
+    artifactType: "generic"
+  - name: "maven-virtual"
+    type: "virtual"
+    artifactType: "maven"
+    upstream: ["maven-local", "maven-central"]
+  - name: "npm-virtual"
+    type: "virtual"
+    artifactType: "npm"
+    upstream: ["npm-local", "npm-registry"]

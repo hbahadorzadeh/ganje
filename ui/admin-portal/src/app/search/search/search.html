@@ -1,0 +1,33 @@
+<div class="search">
+  <h2>Search Artifacts</h2>
+  <form (ngSubmit)="run()">
+    <label>
+      Query:
+      <input name="q" [(ngModel)]="q" placeholder="e.g. myapp-1.0.0.jar" />
+    </label>
+    <label>
+      Repository (optional):
+      <input name="repository" [(ngModel)]="repository" placeholder="repo name" />
+    </label>
+    <button type="submit">Search</button>
+  </form>
+
+  <table mat-table [dataSource]="results()" class="mat-elevation-z2" *ngIf="results().length">
+    <ng-container matColumnDef="repository">
+      <th mat-header-cell *matHeaderCellDef>Repository</th>
+      <td mat-cell *matCellDef="let r">{{ r.repository }}</td>
+    </ng-container>
+    <ng-container matColumnDef="path">
+      <th mat-header-cell *matHeaderCellDef>Path</th>
+      <td mat-cell *matCellDef="let r">{{ r.path }}</td>
+    </ng-container>
+    <ng-container matColumnDef="size">
+      <th mat-header-cell *matHeaderCellDef>Size</th>
+      <td mat-cell *matCellDef="let r">{{ r.size | number }}</td>
+    </ng-container>
+
+    <tr mat-header-row *matHeaderRowDef="columns"></tr>
+    <tr mat-row *matRowDef="let row; columns: columns"></tr>
+  </table>
+</div>
+<p>search works!</p>
