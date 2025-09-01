@@ -38,8 +38,8 @@ func NewMavenRouteRegistrar() RouteRegistrar {
 }
 
 func (m *MavenRouteRegistrar) RegisterRoutes(router *gin.RouterGroup, server *Server) {
-    // Generic handlers to support multi-segment group paths and metadata via handler
-    router.GET("/*path", server.authMiddleware(), server.requireRead(), server.mavenHandler)
+    // Use generic handlers for Maven artifacts
+    router.GET("/*path", server.authMiddleware(), server.requireRead(), server.pullArtifact)
     router.PUT("/*path", server.authMiddleware(), server.requireWrite(), server.pushArtifact)
 }
 
@@ -55,9 +55,10 @@ func NewNPMRouteRegistrar() RouteRegistrar {
 }
 
 func (n *NPMRouteRegistrar) RegisterRoutes(router *gin.RouterGroup, server *Server) {
-	router.GET("/:package", server.authMiddleware(), server.requireRead(), server.getIndex)
-	router.GET("/:package/-/:filename", server.authMiddleware(), server.requireRead(), server.pullArtifact)
-	router.PUT("/:package", server.authMiddleware(), server.requireWrite(), server.pushArtifact)
+    router.GET("/:package", server.authMiddleware(), server.requireRead(), server.getIndex)
+    router.GET("/:package/:version", server.authMiddleware(), server.requireRead(), server.getIndex)
+    router.GET("/:package/-/:filename", server.authMiddleware(), server.requireRead(), server.pullArtifact)
+    router.PUT("/:package", server.authMiddleware(), server.requireWrite(), server.pushArtifact)
 }
 
 // DockerRouteRegistrar handles Docker-specific routes
@@ -156,9 +157,12 @@ func NewCargoRouteRegistrar() RouteRegistrar {
 }
 
 func (c *CargoRouteRegistrar) RegisterRoutes(router *gin.RouterGroup, server *Server) {
-	router.GET("/api/v1/crates/:name", server.authMiddleware(), server.requireRead(), server.getIndex)
-	router.GET("/api/v1/crates/:name/:version/download", server.authMiddleware(), server.requireRead(), server.pullArtifact)
-	router.PUT("/api/v1/crates/new", server.authMiddleware(), server.requireWrite(), server.pushArtifact)
+    router.GET("/api/v1/crates/:name", server.authMiddleware(), server.requireRead(), server.getIndex)
+    router.GET("/api/v1/crates/:name/:version", server.authMiddleware(), server.requireRead(), server.getIndex)
+    router.GET("/api/v1/crates/:name/:version/download", server.authMiddleware(), server.requireRead(), server.pullArtifact)
+    router.PUT("/api/v1/crates/new", server.authMiddleware(), server.requireWrite(), server.pushArtifact)
+    router.DELETE("/api/v1/crates/:name/:version/yank", server.authMiddleware(), server.requireWrite(), server.yankCrate)
+    router.PUT("/api/v1/crates/:name/:version/unyank", server.authMiddleware(), server.requireWrite(), server.unyankCrate)
 }
 
 // NuGetRouteRegistrar handles NuGet-specific routes
@@ -209,9 +213,9 @@ func NewTerraformRouteRegistrar() RouteRegistrar {
 }
 
 func (t *TerraformRouteRegistrar) RegisterRoutes(router *gin.RouterGroup, server *Server) {
-	router.GET("/v1/modules/:namespace/:name/versions", server.authMiddleware(), server.requireRead(), server.getIndex)
-	router.GET("/v1/modules/:namespace/:name/:version/download", server.authMiddleware(), server.requireRead(), server.pullArtifact)
-	router.POST("/v1/modules", server.authMiddleware(), server.requireWrite(), server.pushArtifact)
+    router.GET("/v1/modules/:namespace/:name/:provider/versions", server.authMiddleware(), server.requireRead(), server.getIndex)
+    router.GET("/v1/modules/:namespace/:name/:provider/:version/download", server.authMiddleware(), server.requireRead(), server.terraformDownload)
+    router.POST("/v1/modules", server.authMiddleware(), server.requireWrite(), server.pushArtifact)
 }
 
 // AnsibleRouteRegistrar handles Ansible-specific routes
@@ -231,19 +235,27 @@ func (a *AnsibleRouteRegistrar) RegisterRoutes(router *gin.RouterGroup, server *
 	router.POST("/api/v2/collections/", server.authMiddleware(), server.requireWrite(), server.pushArtifact)
 }
 
-// ConanRouteRegistrar handles Conan-specific routes
-type ConanRouteRegistrar struct {
+// BazelRouteRegistrar handles Bazel Remote Cache routes
+type BazelRouteRegistrar struct {
 	*BaseRouteRegistrar
 }
 
-func NewConanRouteRegistrar() RouteRegistrar {
-	return &ConanRouteRegistrar{
-		BaseRouteRegistrar: NewBaseRouteRegistrar(artifact.ArtifactTypeConan),
+func NewBazelRouteRegistrar() RouteRegistrar {
+	return &BazelRouteRegistrar{
+		BaseRouteRegistrar: NewBaseRouteRegistrar(artifact.ArtifactTypeBazel),
 	}
 }
 
-func (c *ConanRouteRegistrar) RegisterRoutes(router *gin.RouterGroup, server *Server) {
-	router.GET("/*path", server.authMiddleware(), server.requireRead(), server.pullArtifact)
-	router.PUT("/*path", server.authMiddleware(), server.requireWrite(), server.pushArtifact)
-	router.DELETE("/*path", server.authMiddleware(), server.requireWrite(), server.deleteArtifact)
+// Routes follow Bazel HTTP cache layout: /ac/<key> (action cache), /cas/<hash> (content-addressable store)
+func (b *BazelRouteRegistrar) RegisterRoutes(router *gin.RouterGroup, server *Server) {
+	// GET/HEAD to read, PUT to write, DELETE optional
+	router.HEAD("/ac/*path", server.authMiddleware(), server.requireRead(), server.pullArtifact)
+	router.GET("/ac/*path", server.authMiddleware(), server.requireRead(), server.pullArtifact)
+	router.PUT("/ac/*path", server.authMiddleware(), server.requireWrite(), server.pushArtifact)
+	router.DELETE("/ac/*path", server.authMiddleware(), server.requireWrite(), server.deleteArtifact)
+
+	router.HEAD("/cas/*path", server.authMiddleware(), server.requireRead(), server.pullArtifact)
+	router.GET("/cas/*path", server.authMiddleware(), server.requireRead(), server.pullArtifact)
+	router.PUT("/cas/*path", server.authMiddleware(), server.requireWrite(), server.pushArtifact)
+	router.DELETE("/cas/*path", server.authMiddleware(), server.requireWrite(), server.deleteArtifact)
 }

@@ -1,6 +1,7 @@
 package types
 
 import (
+	"bytes"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -10,6 +11,8 @@ import (
 
 	"github.com/hbahadorzadeh/ganje/internal/artifact"
 )
+
+var mavenMagicBytes = []byte{0x50, 0x4B, 0x03, 0x04}
 
 // MavenArtifact implements Maven artifact handling
 type MavenArtifact struct {
@@ -39,10 +42,15 @@ func (m *MavenArtifact) GetPath() string {
 
 // ValidateArtifact validates Maven artifact content
 func (m *MavenArtifact) ValidateArtifact(content io.Reader) error {
-	buf := make([]byte, 1024)
-	_, err := content.Read(buf)
-	if err != nil && err != io.EOF {
+	header := make([]byte, 4)
+	if _, err := io.ReadFull(content, header); err != nil {
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			return fmt.Errorf("invalid artifact content: too short")
+		}
 		return fmt.Errorf("invalid artifact content: %v", err)
+	}
+	if !bytes.Equal(header, mavenMagicBytes) {
+		return fmt.Errorf("invalid artifact content: not a JAR (zip) file")
 	}
 	return nil
 }
@@ -85,7 +93,7 @@ func (m *MavenArtifact) ParsePath(path string) (*artifact.ArtifactInfo, error) {
 	// Extract artifact name and version from filename
 	ext := filepath.Ext(filename)
 	_ = strings.TrimSuffix(filename, ext) // nameVersion not used currently
-	
+
 	return &artifact.ArtifactInfo{
 		Name:    artifactId,
 		Version: version,
@@ -112,7 +120,7 @@ func (m *MavenArtifact) GeneratePath(info *artifact.ArtifactInfo) string {
 // GetMetadata extracts metadata from Maven artifact content
 func (m *MavenArtifact) GetMetadata(content io.Reader) (map[string]string, error) {
 	return map[string]string{
-		"type": "maven-artifact",
+		"type":   "maven-artifact",
 		"format": "jar",
 	}, nil
 }

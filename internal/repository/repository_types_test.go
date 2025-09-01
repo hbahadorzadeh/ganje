@@ -137,6 +137,47 @@ func (m *MockDB) LogAccess(ctx context.Context, log *database.AccessLog) error {
 	return args.Error(0)
 }
 
+func (m *MockDB) UpdateArtifactYanked(ctx context.Context, repositoryName, name, version string, yanked bool) error {
+	args := m.Called(ctx, repositoryName, name, version, yanked)
+	return args.Error(0)
+}
+
+func (m *MockDB) CreateWebhook(ctx context.Context, repoName string, hook *database.Webhook) error {
+	args := m.Called(ctx, repoName, hook)
+	return args.Error(0)
+}
+
+func (m *MockDB) UpdateWebhook(ctx context.Context, id uint, updates map[string]interface{}) error {
+	args := m.Called(ctx, id, updates)
+	return args.Error(0)
+}
+
+func (m *MockDB) DeleteWebhook(ctx context.Context, id uint) error {
+	args := m.Called(ctx, id)
+	return args.Error(0)
+}
+
+func (m *MockDB) GetWebhook(ctx context.Context, id uint) (*database.Webhook, error) {
+	args := m.Called(ctx, id)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*database.Webhook), args.Error(1)
+}
+
+func (m *MockDB) ListWebhooksByRepository(ctx context.Context, repoName string) ([]*database.Webhook, error) {
+	args := m.Called(ctx, repoName)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]*database.Webhook), args.Error(1)
+}
+
+func (m *MockDB) RecordWebhookDelivery(ctx context.Context, delivery *database.WebhookDelivery) error {
+	args := m.Called(ctx, delivery)
+	return args.Error(0)
+}
+
 // MockArtifact for testing
 type MockArtifact struct {
 	mock.Mock

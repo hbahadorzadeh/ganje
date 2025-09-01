@@ -1,0 +1,90 @@
+version: "3.9"
+
+services:
+  mariadb:
+    image: mariadb:11
+    container_name: mariadb
+    environment:
+      MARIADB_DATABASE: ganje
+      MARIADB_USER: ganje
+      MARIADB_PASSWORD: password
+      MARIADB_ROOT_PASSWORD: rootpassword
+    ports:
+      - "3306:3306"
+    volumes:
+      - mariadb-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mariadb-admin ping -h 127.0.0.1 --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  dex:
+    image: dexidp/dex:v2.37.0
+    container_name: dex
+    command: ["dex", "serve", "/etc/dex/config.yaml"]
+    ports:
+      - "5556:5556"
+    volumes:
+      - ./dex/config.yaml:/etc/dex/config.yaml:ro
+      - dex-data:/var/dex
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:5556/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ganje-backend
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      dex:
+        condition: service_healthy
+    volumes:
+      - ./config-compose.yaml:/app/config.yaml:ro
+      - ganje-storage:/var/lib/ganje/storage
+    environment:
+      # If your server reads additional env vars, set them here.
+      TZ: UTC
+    ports:
+      - "8080:8080"
+
+  admin-portal:
+    build:
+      context: ./admin-portal
+      dockerfile: Dockerfile
+    container_name: admin-portal
+    depends_on:
+      - backend
+      - dex
+    ports:
+      - "4200:4200"
+    environment:
+      - NODE_ENV=development
+      - BASE_URL=http://backend:8080
+      - DEX_URL=http://dex:5556
+    working_dir: /app
+    command: ["npm", "start", "--", "--host", "0.0.0.0", "--allowed-hosts=all"]
+
+volumes:
+  mariadb-data:
+  ganje-storage:
+  dex-data:

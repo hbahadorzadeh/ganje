@@ -1,0 +1,11 @@
+[registries]
+ganje = { index = "http://ganje-server:8080/cargo-repo/index" }
+
+[registry]
+default = "ganje"
+
+[source.crates-io]
+replace-with = "ganje"
+
+[source.ganje]
+registry = "http://ganje-server:8080/cargo-repo"

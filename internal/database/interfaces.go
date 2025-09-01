@@ -17,6 +17,15 @@ type DatabaseInterface interface {
 	IncrementPullCount(ctx context.Context, artifactID uint) error
 	GetRepositoryStatistics(ctx context.Context, repositoryName string) (*Statistics, error)
 	LogAccess(ctx context.Context, log *AccessLog) error
+	UpdateArtifactYanked(ctx context.Context, repositoryName, name, version string, yanked bool) error
+
+	// Webhooks
+	CreateWebhook(ctx context.Context, repoName string, hook *Webhook) error
+	UpdateWebhook(ctx context.Context, id uint, updates map[string]interface{}) error
+	DeleteWebhook(ctx context.Context, id uint) error
+	GetWebhook(ctx context.Context, id uint) (*Webhook, error)
+	ListWebhooksByRepository(ctx context.Context, repoName string) ([]*Webhook, error)
+	RecordWebhookDelivery(ctx context.Context, delivery *WebhookDelivery) error
 }
 
 

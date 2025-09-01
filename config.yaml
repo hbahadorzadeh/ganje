@@ -37,6 +37,14 @@ metrics:
   separate_server: false
   port: 9090
 
+webhook:
+  enabled: true
+  workers: 2
+  max_retries: 5
+  initial_backoff_ms: 500
+  max_backoff_ms: 10000
+  http_timeout_ms: 10000
+
 repositories:
   - name: "maven-central"
     type: "remote"

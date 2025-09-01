@@ -20,9 +20,9 @@ const (
 	ArtifactTypeTerraform ArtifactType = "terraform"
 	ArtifactTypeGeneric   ArtifactType = "generic"
 	ArtifactTypeCargo     ArtifactType = "cargo"
-	ArtifactTypeConan     ArtifactType = "conan"
 	ArtifactTypeNuGet     ArtifactType = "nuget"
 	ArtifactTypeRubyGems  ArtifactType = "rubygems"
+	ArtifactTypeBazel     ArtifactType = "bazel"
 )
 
 // ArtifactInfo represents metadata about an artifact
@@ -36,6 +36,7 @@ type ArtifactInfo struct {
 	UploadTime   time.Time         `json:"upload_time"`
 	Metadata     map[string]string `json:"metadata"`
 	Dependencies []string          `json:"dependencies,omitempty"`
+	Yanked       bool              `json:"yanked"`
 }
 
 // Artifact interface defines the contract for all artifact types

@@ -3,8 +3,14 @@ server:
   port: 8080
 
 database:
-  driver: "sqlite"
-  dsn: "test.db"
+  driver: "mysql"
+  host: "mariadb"
+  port: 3306
+  username: "ganje"
+  password: "password"
+  database: "ganje"
+  ssl_mode: ""
+
 
 storage:
   type: "local"

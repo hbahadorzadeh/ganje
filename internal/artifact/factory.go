@@ -71,7 +71,7 @@ func (f *DefaultFactory) CreateArtifact(artifactType ArtifactType) (Artifact, er
 func (f *DefaultFactory) GetSupportedTypes() []ArtifactType {
 	return []ArtifactType{
 		ArtifactTypeMaven, ArtifactTypePyPI, ArtifactTypeHelm, ArtifactTypeDocker, ArtifactTypeNPM, ArtifactTypeGolang,
-		ArtifactTypeAnsible, ArtifactTypeTerraform, ArtifactTypeGeneric, ArtifactTypeCargo, ArtifactTypeConan,
-		ArtifactTypeNuGet, ArtifactTypeRubyGems,
+		ArtifactTypeAnsible, ArtifactTypeTerraform, ArtifactTypeGeneric, ArtifactTypeCargo,
+		ArtifactTypeNuGet, ArtifactTypeRubyGems, ArtifactTypeBazel,
 	}
 }

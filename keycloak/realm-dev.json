@@ -1,0 +1,40 @@
+{
+  "realm": "dev",
+  "enabled": true,
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "resetPasswordAllowed": true,
+  "roles": {
+    "realm": [
+      { "name": "admins", "description": "Administrators" },
+      { "name": "developers", "description": "Developers" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "admin-portal-client",
+      "name": "Admin Portal",
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "redirectUris": [
+        "http://localhost:4200/*",
+        "http://127.0.0.1:4200/*",
+        "http://0.0.0.0:4200/*",
+        "http://host.docker.internal:4200/*"
+      ],
+      "webOrigins": ["*"]
+    }
+  ],
+  "users": [
+    {
+      "username": "testuser",
+      "email": "testuser@example.com",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        { "type": "password", "value": "password", "temporary": false }
+      ],
+      "realmRoles": ["developers"]
+    }
+  ]
+}

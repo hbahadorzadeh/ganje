@@ -12,6 +12,7 @@ import (
 	"github.com/hbahadorzadeh/ganje/internal/auth"
 	"github.com/hbahadorzadeh/ganje/internal/config"
 	"github.com/hbahadorzadeh/ganje/internal/database"
+	"github.com/hbahadorzadeh/ganje/internal/messaging"
 	"github.com/hbahadorzadeh/ganje/internal/metrics"
 	"github.com/hbahadorzadeh/ganje/internal/repository"
 )
@@ -22,6 +23,8 @@ type Server struct {
 	db            database.DatabaseInterface
 	repoManager   repository.Manager
 	authService   auth.AuthInterface
+	oidcService   *auth.OIDCService
+	publisher     messaging.Publisher
 	router        *gin.Engine
 	routeRegistry *RouteRegistry
 	metrics       *metrics.MetricsService
@@ -48,6 +51,18 @@ func New(cfg *config.Config) *Server {
 	}
 	authService := auth.NewAuthService(cfg.Auth.JWTSecret, cfg.Auth.OAuthServer, realmPerms)
 
+	// Initialize OIDC service
+	var oidcService *auth.OIDCService
+	if cfg.Auth.OIDC.ClientID != "" {
+		oidcConfig := auth.OIDCConfig{
+			ClientID:     cfg.Auth.OIDC.ClientID,
+			ClientSecret: cfg.Auth.OIDC.ClientSecret,
+			RedirectURI:  cfg.Auth.OIDC.RedirectURI,
+			IssuerURL:    cfg.Auth.OAuthServer,
+		}
+		oidcService = auth.NewOIDCService(oidcConfig)
+	}
+
 	// Initialize metrics service first
 	var metricsService *metrics.MetricsService
 	if cfg.Metrics.Enabled {
@@ -64,16 +79,36 @@ func New(cfg *config.Config) *Server {
 		metricsServer = metrics.NewMetricsServer(cfg.Metrics.Port, metricsService)
 	}
 
+	// Initialize messaging publisher (RabbitMQ or Noop)
+	var publisher messaging.Publisher = &messaging.NoopPublisher{}
+	if cfg.Messaging.RabbitMQ.Enabled {
+		pub, err := messaging.NewRabbitMQPublisher(
+			cfg.Messaging.RabbitMQ.URL,
+			cfg.Messaging.RabbitMQ.Exchange,
+			cfg.Messaging.RabbitMQ.ExchangeType,
+			cfg.Messaging.RabbitMQ.RoutingKey,
+		)
+		if err == nil {
+			publisher = pub
+		} else {
+			fmt.Printf("Warning: RabbitMQ disabled due to init error: %v\n", err)
+		}
+	}
+
 	server := &Server{
 		config:        cfg,
 		db:            db,
 		repoManager:   repoManager,
 		authService:   authService,
+		oidcService:   oidcService,
+		publisher:     publisher,
 		routeRegistry: NewRouteRegistry(),
 		metrics:       metricsService,
 		metricsServer: metricsServer,
 		startTime:     time.Now(),
 	}
+
+	// Webhook dispatcher now runs as a standalone service.
 
 	server.setupRoutes()
 	return server
@@ -82,6 +117,21 @@ func New(cfg *config.Config) *Server {
 // setupRoutes configures the HTTP routes
 func (s *Server) setupRoutes() {
 	s.router = gin.Default()
+
+	// Add CORS middleware
+	s.router.Use(func(c *gin.Context) {
+		c.Header("Access-Control-Allow-Origin", "http://localhost:4200")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Authorization")
+		c.Header("Access-Control-Allow-Credentials", "true")
+		
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(204)
+			return
+		}
+		
+		c.Next()
+	})
 
 	// Add metrics middleware if enabled
 	if s.metrics != nil {
@@ -99,6 +149,11 @@ func (s *Server) setupRoutes() {
 	// API routes
 	api := s.router.Group("/api/v1")
 	{
+		// Authentication endpoints
+		if s.oidcService != nil {
+			api.POST("/auth/callback", s.handleAuthCallback)
+		}
+
 		// Repository management
 		api.GET("/repositories", s.authMiddleware(), s.listRepositories)
 		api.GET("/repositories/:name", s.authMiddleware(), s.getRepository)
@@ -124,6 +179,13 @@ func (s *Server) setupRoutes() {
 		api.POST("/repositories/:name/artifacts", s.authMiddleware(), s.requireWrite(), s.uploadArtifact)
 		api.POST("/repositories/:name/artifacts/move", s.authMiddleware(), s.requireWrite(), s.moveArtifact)
 		api.POST("/repositories/:name/artifacts/copy", s.authMiddleware(), s.requireWrite(), s.copyArtifact)
+
+		// Webhooks (admin only)
+		api.GET("/repositories/:name/webhooks", s.authMiddleware(), s.requireAdmin(), s.listWebhooks)
+		api.POST("/repositories/:name/webhooks", s.authMiddleware(), s.requireAdmin(), s.createWebhook)
+		api.GET("/repositories/:name/webhooks/:id", s.authMiddleware(), s.requireAdmin(), s.getWebhook)
+		api.PUT("/repositories/:name/webhooks/:id", s.authMiddleware(), s.requireAdmin(), s.updateWebhook)
+		api.DELETE("/repositories/:name/webhooks/:id", s.authMiddleware(), s.requireAdmin(), s.deleteWebhook)
 
 		// Search
 		api.GET("/search", s.authMiddleware(), s.requireRead(), s.searchArtifacts)
@@ -179,7 +241,16 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			err = shutdownErr
 		}
 	}
-	
+
+	// Close messaging publisher
+	if s.publisher != nil {
+		if closeErr := s.publisher.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}
+
+	// Webhook dispatcher runs as separate process; nothing to stop here.
+
 	return err
 }
 
@@ -284,16 +355,23 @@ func (s *Server) requirePermission(permission auth.Permission) gin.HandlerFunc {
 		}
 
 		authContext := authCtx.(*auth.AuthContext)
-		repository := c.Param("repository")
+        // Prefer explicit route params set for admin/API endpoints
+        repository := c.Param("name")
         if repository == "" {
-            // Fallback: first path segment after leading '/'
+            repository = c.Param("repository")
+        }
+        // For non-API dynamic routes (e.g., repoName/... at root), derive from path
+        if repository == "" {
             fullPath := c.Request.URL.Path
-            if len(fullPath) > 1 {
-                trimmed := strings.TrimPrefix(fullPath, "/")
-                if i := strings.Index(trimmed, "/"); i >= 0 {
-                    repository = trimmed[:i]
-                } else {
-                    repository = trimmed
+            // If this is an API path, do not guess a repository from "/api/..."
+            if !strings.HasPrefix(fullPath, "/api/") {
+                if len(fullPath) > 1 {
+                    trimmed := strings.TrimPrefix(fullPath, "/")
+                    if i := strings.Index(trimmed, "/"); i >= 0 {
+                        repository = trimmed[:i]
+                    } else {
+                        repository = trimmed
+                    }
                 }
             }
         }
@@ -312,6 +390,57 @@ func (s *Server) requirePermission(permission auth.Permission) gin.HandlerFunc {
 
 		c.Next()
 	}
+}
+
+// handleAuthCallback handles OIDC authentication callback
+func (s *Server) handleAuthCallback(c *gin.Context) {
+	if s.oidcService == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "OIDC not configured"})
+		return
+	}
+
+	var request struct {
+		Code  string `json:"code" binding:"required"`
+		State string `json:"state"`
+	}
+
+	if err := c.ShouldBindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request", "details": err.Error()})
+		return
+	}
+
+	// Exchange code for token
+	tokenResp, err := s.oidcService.ExchangeCodeForToken(c.Request.Context(), request.Code)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Failed to exchange code for token", "details": err.Error()})
+		return
+	}
+
+	// Get user info
+	userInfo, err := s.oidcService.GetUserInfo(c.Request.Context(), tokenResp.AccessToken)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Failed to get user info", "details": err.Error()})
+		return
+	}
+
+	// Create JWT token
+	jwtToken, err := s.oidcService.CreateJWTFromUserInfo(userInfo, s.config.Auth.JWTSecret)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create JWT token", "details": err.Error()})
+		return
+	}
+
+	// Return response compatible with frontend
+	c.JSON(http.StatusOK, gin.H{
+		"token": jwtToken,
+		"user": gin.H{
+			"id":       userInfo.Sub,
+			"username": userInfo.PreferredUsername,
+			"email":    userInfo.Email,
+			"realms":   userInfo.Groups,
+			"active":   true,
+		},
+	})
 }
 
 // dockerAPIVersion returns Docker registry API version

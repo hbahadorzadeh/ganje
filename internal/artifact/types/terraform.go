@@ -32,19 +32,27 @@ func (t *TerraformArtifact) GetArtifactMetadata() *artifact.Metadata {
 
 // GetPath returns the storage path for Terraform modules
 func (t *TerraformArtifact) GetPath() string {
-	return fmt.Sprintf("v1/modules/%s/%s/%s/download", t.metadata.Group, t.metadata.Name, t.metadata.Version)
+	provider := t.metadata.Properties["provider"]
+	if provider == "" {
+		provider = "provider"
+	}
+	return fmt.Sprintf("v1/modules/%s/%s/%s/%s/download", t.metadata.Group, t.metadata.Name, provider, t.metadata.Version)
 }
 
 // GetIndexPath returns the index path for Terraform registry
 func (t *TerraformArtifact) GetIndexPath() string {
-	return fmt.Sprintf("v1/modules/%s/%s/versions", t.metadata.Group, t.metadata.Name)
+	provider := t.metadata.Properties["provider"]
+	if provider == "" {
+		provider = "provider"
+	}
+	return fmt.Sprintf("v1/modules/%s/%s/%s/versions", t.metadata.Group, t.metadata.Name, provider)
 }
 
 // ValidatePath validates Terraform module path
 func (t *TerraformArtifact) ValidatePath(path string) error {
 	patterns := []string{
-		`^v1/modules/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/download$`,
-		`^v1/modules/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/versions$`,
+		`^v1/modules/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/download$`,
+		`^v1/modules/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/versions$`,
 	}
 
 	for _, pattern := range patterns {
@@ -67,14 +75,15 @@ func (t *TerraformArtifact) ParsePath(path string) (*artifact.ArtifactInfo, erro
 
 	if strings.Contains(path, "/download") {
 		parts := strings.Split(path, "/")
-		if len(parts) < 6 {
+		if len(parts) < 7 {
 			return nil, fmt.Errorf("invalid Terraform download path")
 		}
-		
+		// v1/modules/{namespace}/{name}/{provider}/{version}/download
 		namespace := parts[2]
 		name := parts[3]
-		version := parts[4]
-		
+		provider := parts[4]
+		version := parts[5]
+
 		return &artifact.ArtifactInfo{
 			Name:    name,
 			Version: version,
@@ -82,6 +91,7 @@ func (t *TerraformArtifact) ParsePath(path string) (*artifact.ArtifactInfo, erro
 			Path:    path,
 			Metadata: map[string]string{
 				"namespace": namespace,
+				"provider":  provider,
 				"type": "module",
 			},
 		}, nil
@@ -96,7 +106,11 @@ func (t *TerraformArtifact) GeneratePath(info *artifact.ArtifactInfo) string {
 	if namespace == "" {
 		namespace = "default"
 	}
-	return fmt.Sprintf("v1/modules/%s/%s/%s/download", namespace, info.Name, info.Version)
+	provider := info.Metadata["provider"]
+	if provider == "" {
+		provider = "provider"
+	}
+	return fmt.Sprintf("v1/modules/%s/%s/%s/%s/download", namespace, info.Name, provider, info.Version)
 }
 
 // ValidateArtifact validates the artifact content
@@ -123,37 +137,40 @@ func (t *TerraformArtifact) GenerateIndex(artifacts []*artifact.ArtifactInfo) ([
 		Version string `json:"version"`
 	}
 
+	type TerraformModule struct {
+		Source   string             `json:"source"`
+		Versions []TerraformVersion `json:"versions"`
+	}
+
 	type TerraformVersions struct {
-		Modules []struct {
-			Versions []TerraformVersion `json:"versions"`
-		} `json:"modules"`
+		Modules []TerraformModule `json:"modules"`
 	}
 
-	versions := TerraformVersions{
-		Modules: []struct {
-			Versions []TerraformVersion `json:"versions"`
-		}{
-			{
-				Versions: make([]TerraformVersion, 0, len(artifacts)),
-			},
-		},
-	}
-
-	for _, art := range artifacts {
-		version := TerraformVersion{
-			Version: art.Version,
+	// Derive source from first artifact if present: namespace/name/provider
+	source := ""
+	if len(artifacts) > 0 {
+		ns := artifacts[0].Metadata["namespace"]
+		name := artifacts[0].Name
+		prov := artifacts[0].Metadata["provider"]
+		if ns != "" && name != "" && prov != "" {
+			source = fmt.Sprintf("%s/%s/%s", ns, name, prov)
 		}
-		versions.Modules[0].Versions = append(versions.Modules[0].Versions, version)
 	}
 
-	return json.MarshalIndent(versions, "", "  ")
+	module := TerraformModule{Source: source, Versions: make([]TerraformVersion, 0, len(artifacts))}
+	for _, art := range artifacts {
+		module.Versions = append(module.Versions, TerraformVersion{Version: art.Version})
+	}
+
+	payload := TerraformVersions{Modules: []TerraformModule{module}}
+	return json.MarshalIndent(payload, "", "  ")
 }
 
 // GetEndpoints returns Terraform registry standard endpoints
 func (t *TerraformArtifact) GetEndpoints() []string {
 	return []string{
-		"GET /v1/modules/{namespace}/{name}/versions",
-		"GET /v1/modules/{namespace}/{name}/{version}/download",
+		"GET /v1/modules/{namespace}/{name}/{provider}/versions",
+		"GET /v1/modules/{namespace}/{name}/{provider}/{version}/download",
 		"POST /v1/modules",
 	}
 }

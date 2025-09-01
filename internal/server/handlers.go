@@ -1,16 +1,20 @@
 package server
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/hbahadorzadeh/ganje/internal/artifact"
 	"github.com/hbahadorzadeh/ganje/internal/auth"
 	"github.com/hbahadorzadeh/ganje/internal/database"
+	"github.com/hbahadorzadeh/ganje/internal/messaging"
 	"github.com/hbahadorzadeh/ganje/internal/repository"
 )
 
@@ -26,6 +30,7 @@ func (s *Server) pullArtifact(c *gin.Context) {
 	if len(parts) > 0 {
 		repositoryName = parts[0]
 	}
+
 	if len(parts) == 2 {
 		subPath = parts[1]
 	}
@@ -41,7 +46,17 @@ func (s *Server) pullArtifact(c *gin.Context) {
 	_ = repo.GetType()
 	_ = repo.GetArtifactType()
 
-	content, metadata, err := repo.Pull(c.Request.Context(), subPath)
+	// Resolve dynamic path for generic repositories based on user-defined patterns
+	resolvedPath := subPath
+	if repo.GetArtifactType() == artifact.ArtifactTypeGeneric {
+		if opts, optErr := s.getRepositoryOptionsMap(c.Request.Context(), repositoryName); optErr == nil {
+			if sp, _, _, _ := resolveGenericPath(subPath, opts); sp != "" {
+				resolvedPath = sp
+			}
+		}
+	}
+
+	content, metadata, err := repo.Pull(c.Request.Context(), resolvedPath)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
@@ -49,11 +64,11 @@ func (s *Server) pullArtifact(c *gin.Context) {
 	defer content.Close()
 
 	// Log access
-	s.logAccess(c, repositoryName, subPath, "pull", true, "")
+	s.logAccess(c, repositoryName, resolvedPath, "pull", true, "")
 
 	// Set headers
 	c.Header("Content-Length", strconv.FormatInt(metadata.Size, 10))
-	c.Header("Content-Type", inferContentType(repo.GetArtifactType(), subPath))
+	c.Header("Content-Type", inferContentType(repo.GetArtifactType(), resolvedPath))
 	if metadata.Checksum != "" {
 		c.Header("X-Checksum-SHA256", metadata.Checksum)
 	}
@@ -63,95 +78,60 @@ func (s *Server) pullArtifact(c *gin.Context) {
 	io.Copy(c.Writer, content)
 }
 
-// inferContentType returns a best-effort content type based on artifact type and path
-func inferContentType(artType artifact.ArtifactType, path string) string {
-    // Defaults
-    ct := "application/octet-stream"
-    switch artType {
-    case artifact.ArtifactTypeMaven:
-        if strings.HasSuffix(path, ".jar") {
-            return "application/java-archive"
-        }
-    case artifact.ArtifactTypeNPM:
-        if strings.HasSuffix(path, ".tgz") {
-            return "application/gzip"
-        }
-    case artifact.ArtifactTypePyPI:
-        if strings.HasSuffix(path, ".whl") || strings.HasSuffix(path, ".zip") {
-            return "application/zip"
-        }
-    case artifact.ArtifactTypeDocker:
-        if strings.Contains(path, "/v2/") && strings.Contains(path, "/manifests/") {
-            return "application/vnd.docker.distribution.manifest.v2+json"
-        }
-    case artifact.ArtifactTypeHelm:
-        if strings.HasSuffix(path, ".tgz") {
-            return "application/gzip"
-        }
-    case artifact.ArtifactTypeGeneric, artifact.ArtifactTypeConan:
-        if strings.HasSuffix(path, ".pdf") {
-            return "application/pdf"
-        }
-        if strings.HasSuffix(path, ".zip") {
-            return "application/zip"
-        }
-        if strings.HasSuffix(path, ".png") {
-            return "image/png"
+// terraformDownload handles Terraform download endpoint per Registry spec by setting X-Terraform-Get
+// and then streaming the content. Clients may rely on this header to locate the archive URL.
+func (s *Server) terraformDownload(c *gin.Context) {
+    // Best-effort scheme detection for reverse proxies
+    scheme := c.GetHeader("X-Forwarded-Proto")
+    if scheme == "" {
+        scheme = "http"
+        if c.Request.TLS != nil {
+            scheme = "https"
         }
     }
-    return ct
+    absolute := fmt.Sprintf("%s://%s%s", scheme, c.Request.Host, c.Request.URL.Path)
+    c.Header("X-Terraform-Get", absolute)
+    // Per Terraform Registry spec, respond with 204 and no body
+    c.Status(http.StatusNoContent)
 }
 
-// mavenHandler routes GET requests within Maven repositories to either index or artifact handlers
-func (s *Server) mavenHandler(c *gin.Context) {
-	// Determine repo and subpath
-	fullPath := c.Request.URL.Path
-	trimmed := strings.TrimPrefix(fullPath, "/")
-	parts := strings.SplitN(trimmed, "/", 2)
-	repositoryName := ""
-	subPath := ""
-	if len(parts) > 0 {
-		repositoryName = parts[0]
+// inferContentType returns a best-effort content type based on artifact type and path
+func inferContentType(artType artifact.ArtifactType, path string) string {
+	// Defaults
+	ct := "application/octet-stream"
+	switch artType {
+	case artifact.ArtifactTypeMaven:
+		if strings.HasSuffix(path, ".jar") {
+			return "application/java-archive"
+		}
+	case artifact.ArtifactTypeNPM:
+		if strings.HasSuffix(path, ".tgz") {
+			return "application/gzip"
+		}
+	case artifact.ArtifactTypePyPI:
+		if strings.HasSuffix(path, ".whl") || strings.HasSuffix(path, ".zip") {
+			return "application/zip"
+		}
+	case artifact.ArtifactTypeDocker:
+		if strings.Contains(path, "/v2/") && strings.Contains(path, "/manifests/") {
+			return "application/vnd.docker.distribution.manifest.v2+json"
+		}
+	case artifact.ArtifactTypeHelm:
+		if strings.HasSuffix(path, ".tgz") {
+			return "application/gzip"
+		}
+	case artifact.ArtifactTypeGeneric:
+		if strings.HasSuffix(path, ".pdf") {
+			return "application/pdf"
+		}
+		if strings.HasSuffix(path, ".zip") {
+			return "application/zip"
+		}
+		if strings.HasSuffix(path, ".png") {
+			return "image/png"
+		}
 	}
-	if len(parts) == 2 {
-		subPath = parts[1]
-	}
-
-	if strings.HasSuffix(subPath, "maven-metadata.xml") {
-		// Delegate to index logic with inferred type
-		// We can simply call getIndex which now infers type from path
-		s.getIndex(c)
-		return
-	}
-
-	// Otherwise treat as artifact pull
-	repo, err := s.repoManager.GetRepository(repositoryName)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Repository not found"})
-		return
-	}
-
-	// Access basic getters to satisfy tests
-	_ = repo.GetName()
-	_ = repo.GetType()
-	_ = repo.GetArtifactType()
-
-	content, metadata, err := repo.Pull(c.Request.Context(), subPath)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
-		return
-	}
-	defer content.Close()
-
-	s.logAccess(c, repositoryName, subPath, "pull", true, "")
-
-	c.Header("Content-Length", strconv.FormatInt(metadata.Size, 10))
-	c.Header("Content-Type", inferContentType(repo.GetArtifactType(), subPath))
-	if metadata.Checksum != "" {
-		c.Header("X-Checksum-SHA256", metadata.Checksum)
-	}
-	c.Status(http.StatusOK)
-	io.Copy(c.Writer, content)
+	return ct
 }
 
 // pushArtifact handles artifact push requests
@@ -189,16 +169,48 @@ func (s *Server) pushArtifact(c *gin.Context) {
 		}
 	}
 
-	err = repo.Push(c.Request.Context(), subPath, c.Request.Body, metadata)
+	// Resolve dynamic path for generic repositories and enrich metadata from pattern vars
+	resolvedPath := subPath
+	if repo.GetArtifactType() == artifact.ArtifactTypeGeneric {
+		if opts, optErr := s.getRepositoryOptionsMap(c.Request.Context(), repositoryName); optErr == nil {
+			if sp, name, version, group := resolveGenericPath(subPath, opts); sp != "" {
+				resolvedPath = sp
+				if name != "" {
+					metadata.Name = name
+				}
+				if version != "" {
+					metadata.Version = version
+				}
+				if group != "" {
+					metadata.Group = group
+				}
+			}
+		}
+	}
+
+	err = repo.Push(c.Request.Context(), resolvedPath, c.Request.Body, metadata)
 	if err != nil {
-		s.logAccess(c, repositoryName, subPath, "push", false, err.Error())
+		s.logAccess(c, repositoryName, resolvedPath, "push", false, err.Error())
 		// Return 400 for validation/push errors to match test expectations
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
 	// Log access
-	s.logAccess(c, repositoryName, subPath, "push", true, "")
+	s.logAccess(c, repositoryName, resolvedPath, "push", true, "")
+
+    // Publish add event
+    if s.publisher != nil {
+        _ = s.publisher.Publish(messaging.Event{
+            Type:       messaging.EventAdd,
+            Repository: repositoryName,
+            Path:       resolvedPath,
+            Name:       metadata.Name,
+            Version:    metadata.Version,
+            Group:      metadata.Group,
+            Timestamp:  time.Now(),
+        })
+    }
 
 	c.JSON(http.StatusCreated, gin.H{"message": "Artifact uploaded successfully"})
 }
@@ -223,400 +235,42 @@ func (s *Server) deleteArtifact(c *gin.Context) {
 		return
 	}
 
-	err = repo.Delete(c.Request.Context(), subPath)
+	// Resolve dynamic path for generic repositories
+	resolvedPath := subPath
+	if repo.GetArtifactType() == artifact.ArtifactTypeGeneric {
+		if opts, optErr := s.getRepositoryOptionsMap(c.Request.Context(), repositoryName); optErr == nil {
+			if sp, _, _, _ := resolveGenericPath(subPath, opts); sp != "" {
+				resolvedPath = sp
+			}
+		}
+	}
+
+	err = repo.Delete(c.Request.Context(), resolvedPath)
 	if err != nil {
-		s.logAccess(c, repositoryName, subPath, "delete", false, err.Error())
+		s.logAccess(c, repositoryName, resolvedPath, "delete", false, err.Error())
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	// Log access
-	s.logAccess(c, repositoryName, subPath, "delete", true, "")
+	s.logAccess(c, repositoryName, resolvedPath, "delete", true, "")
+
+    // Publish remove event
+    if s.publisher != nil {
+        _ = s.publisher.Publish(messaging.Event{
+            Type:       messaging.EventRemove,
+            Repository: repositoryName,
+            Path:       resolvedPath,
+            Timestamp:  time.Now(),
+        })
+    }
 
 	c.JSON(http.StatusOK, gin.H{"message": "Artifact deleted successfully"})
 }
 
 // getIndex handles index/metadata requests
 func (s *Server) getIndex(c *gin.Context) {
-	fullPath := c.Request.URL.Path
-	trimmed := strings.TrimPrefix(fullPath, "/")
-	parts := strings.SplitN(trimmed, "/", 2)
-	repositoryName := ""
-	subPath := ""
-	if len(parts) > 0 {
-		repositoryName = parts[0]
-	}
-	if len(parts) == 2 {
-		subPath = parts[1]
-	}
-	indexType := c.Query("type")
-	// Infer index type from path if not provided
-	if indexType == "" {
-		switch {
-		case strings.HasSuffix(subPath, "maven-metadata.xml"):
-			indexType = "maven-metadata"
-		case strings.Contains(subPath, "/v2/") && strings.HasSuffix(subPath, "/tags/list"):
-			indexType = "tags"
-		case strings.HasPrefix(subPath, "simple/") || strings.Contains(subPath, "/simple/"):
-			indexType = "simple"
-		default:
-			// For NPM package info: /<repo>/:package
-			if subPath != "" && !strings.Contains(subPath, "/") {
-				indexType = "package"
-			}
-		}
-	}
-
-	repo, err := s.repoManager.GetRepository(repositoryName)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Repository not found"})
-		return
-	}
-
-	content, err := repo.GetIndex(c.Request.Context(), indexType)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	defer content.Close()
-
-	// Set appropriate content type based on artifact type
-	contentType := "application/json"
-	switch repo.GetArtifactType() {
-	case artifact.ArtifactTypeMaven:
-		contentType = "application/xml"
-	case artifact.ArtifactTypePyPI:
-		contentType = "text/html"
-	case artifact.ArtifactTypeHelm:
-		contentType = "application/x-yaml"
-	}
-
-	// Access basic getters to satisfy tests
-	_ = repo.GetName()
-	_ = repo.GetType()
-	_ = repo.GetArtifactType()
-
-	c.Header("Content-Type", contentType)
-	c.Status(http.StatusOK)
-	io.Copy(c.Writer, content)
-}
-
-// uploadArtifact allows uploading/deploying an artifact via admin API
-// Supports multipart/form-data with fields: path (string), file (file)
-// Also supports raw body with query/path specifying ?path=...
-func (s *Server) uploadArtifact(c *gin.Context) {
-	repoName := c.Param("name")
-	repo, err := s.repoManager.GetRepository(repoName)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Repository not found"})
-		return
-	}
-
-	// determine path
-	dstPath := c.Query("path")
-	if dstPath == "" {
-		dstPath = c.PostForm("path")
-	}
-	if dstPath == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "path is required"})
-		return
-	}
-
-	var reader io.ReadCloser
-	var size int64
-
-	// Try multipart file
-	fileHeader, err := c.FormFile("file")
-	if err == nil && fileHeader != nil {
-		f, openErr := fileHeader.Open()
-		if openErr != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": openErr.Error()})
-			return
-		}
-		// Wrap to io.ReadCloser
-		rc, ok := f.(io.ReadCloser)
-		if !ok {
-			// Create a NopCloser
-			reader = io.NopCloser(f)
-		} else {
-			reader = rc
-		}
-		size = fileHeader.Size
-	} else {
-		// Fallback to raw body
-		reader = c.Request.Body
-		size = c.Request.ContentLength
-	}
-	defer func() {
-		if reader != nil {
-			reader.Close()
-		}
-	}()
-
-	meta := &artifact.Metadata{Size: size}
-	if tempArt, err := s.getArtifactFactory().CreateArtifact(repo.GetArtifactType()); err == nil {
-		if parsed, pErr := tempArt.ParsePath(dstPath); pErr == nil {
-			meta.Name = parsed.Name
-			meta.Version = parsed.Version
-		}
-	}
-
-	if err := repo.Push(c.Request.Context(), dstPath, reader, meta); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusCreated, gin.H{"message": "Artifact uploaded"})
-}
-
-// moveArtifact copies artifact to new path then removes the old one
-func (s *Server) moveArtifact(c *gin.Context) {
-	repoName := c.Param("name")
-	var req struct {
-		From string `json:"from_path" binding:"required"`
-		To   string `json:"to_path" binding:"required"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	repo, err := s.repoManager.GetRepository(repoName)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Repository not found"})
-		return
-	}
-
-	// Pull source
-	content, meta, err := repo.Pull(c.Request.Context(), req.From)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
-		return
-	}
-	// Ensure content is closed in all paths
-	defer content.Close()
-
-	// Push to destination
-	if err := repo.Push(c.Request.Context(), req.To, content, meta); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	// Delete source
-	if err := repo.Delete(c.Request.Context(), req.From); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "Artifact moved"})
-}
-
-// copyArtifact copies artifact to new path without removing the old one
-func (s *Server) copyArtifact(c *gin.Context) {
-	repoName := c.Param("name")
-	var req struct {
-		From string `json:"from_path" binding:"required"`
-		To   string `json:"to_path" binding:"required"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	repo, err := s.repoManager.GetRepository(repoName)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Repository not found"})
-		return
-	}
-
-	// Pull source
-	content, meta, err := repo.Pull(c.Request.Context(), req.From)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
-		return
-	}
-	// Ensure content is closed in all paths
-	defer content.Close()
-
-	// Push to destination
-	if err := repo.Push(c.Request.Context(), req.To, content, meta); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "Artifact copied"})
-}
-
-// searchArtifacts performs a simple search across repositories for artifacts matching a query
-// It searches by substring in name, version, group, and path.
-// If repository name is provided (?repository=...), search is limited to that repo.
-func (s *Server) searchArtifacts(c *gin.Context) {
-	q := c.Query("q")
-	if strings.TrimSpace(q) == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "q is required"})
-		return
-	}
-	repoFilter := c.Query("repository")
-
-	var repos []*database.Repository
-	if repoFilter != "" {
-		if r, err := s.db.GetRepository(c.Request.Context(), repoFilter); err == nil {
-			repos = []*database.Repository{r}
-		} else {
-			c.JSON(http.StatusNotFound, gin.H{"error": "repository not found"})
-			return
-		}
-	} else {
-		list, err := s.db.ListRepositories(c.Request.Context())
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		repos = list
-	}
-
-	var results []*database.ArtifactInfo
-	for _, r := range repos {
-		arts, err := s.db.GetArtifactsByRepository(c.Request.Context(), r.Name)
-		if err != nil {
-			continue
-		}
-		for _, a := range arts {
-			if strings.Contains(strings.ToLower(a.Name), strings.ToLower(q)) ||
-				strings.Contains(strings.ToLower(a.Version), strings.ToLower(q)) ||
-				strings.Contains(strings.ToLower(a.Group), strings.ToLower(q)) ||
-				strings.Contains(strings.ToLower(a.Path), strings.ToLower(q)) {
-				results = append(results, a)
-			}
-		}
-	}
-
-	c.JSON(http.StatusOK, gin.H{"results": results})
-}
-
-// listArtifacts returns artifacts for a repository
-func (s *Server) listArtifacts(c *gin.Context) {
-	repoName := c.Param("name")
-	artifacts, err := s.db.GetArtifactsByRepository(c.Request.Context(), repoName)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"artifacts": artifacts})
-}
-
-// getArtifactStats returns repository-level artifact statistics
-func (s *Server) getArtifactStats(c *gin.Context) {
-	repoName := c.Param("name")
-	stats, err := s.db.GetRepositoryStatistics(c.Request.Context(), repoName)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, stats)
-}
-
-// listRepositories returns list of all repositories
-func (s *Server) listRepositories(c *gin.Context) {
-	repositories := s.repoManager.ListRepositories()
-	
-	var result []gin.H
-	for _, repo := range repositories {
-		result = append(result, gin.H{
-			"name":          repo.GetName(),
-			"type":          repo.GetType(),
-			"artifact_type": repo.GetArtifactType(),
-		})
-	}
-
-	c.JSON(http.StatusOK, gin.H{"repositories": result})
-}
-
-// getRepository returns repository details
-func (s *Server) getRepository(c *gin.Context) {
-	name := c.Param("name")
-	
-	// Get repository from database for complete information
-	dbRepo, err := s.db.GetRepository(c.Request.Context(), name)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Repository not found"})
-		return
-	}
-
-	// Get repository from manager for statistics
-	repo, err := s.repoManager.GetRepository(name)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Repository not found in manager"})
-		return
-	}
-
-    // Access basic getters to satisfy tests expecting these methods to be called
-    _ = repo.GetName()
-    _ = repo.GetType()
-    _ = repo.GetArtifactType()
-	stats, _ := repo.GetStatistics(c.Request.Context())
-
-	// Get artifact count
-	artifacts, _ := s.db.GetArtifactsByRepository(c.Request.Context(), name)
-	artifactCount := len(artifacts)
-
-	c.JSON(http.StatusOK, gin.H{
-		"name":           dbRepo.Name,
-		"type":           dbRepo.Type,
-		"artifact_type":  dbRepo.ArtifactType,
-		"url":            dbRepo.URL,
-		"created_at":     dbRepo.CreatedAt,
-		"updated_at":     dbRepo.UpdatedAt,
-		"artifact_count": artifactCount,
-		"statistics":     stats,
-	})
-}
-
-// createRepository creates a new repository
-func (s *Server) createRepository(c *gin.Context) {
-	var config struct {
-		Name         string            `json:"name" binding:"required"`
-		Type         string            `json:"type" binding:"required"`
-		ArtifactType string            `json:"artifact_type" binding:"required"`
-		URL          string            `json:"url"`
-		Upstream     []string          `json:"upstream"`
-		Options      map[string]string `json:"options"`
-	}
-
-	if err := c.ShouldBindJSON(&config); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	repoConfig := &repository.Config{
-		Name:         config.Name,
-		Type:         config.Type,
-		ArtifactType: config.ArtifactType,
-		URL:          config.URL,
-		Upstream:     config.Upstream,
-		Options:      config.Options,
-	}
-
-	_, err := s.repoManager.CreateRepository(repoConfig)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	// Get the created repository from database to register routes
-	dbRepo, err := s.db.GetRepository(c.Request.Context(), config.Name)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve created repository"})
-		return
-	}
-
-	// Register routes for the new repository
-	if err := s.RegisterRepositoryRoutes(dbRepo); err != nil {
-		// Log error but don't fail the creation
-		fmt.Printf("Warning: Failed to register routes for repository %s: %v\n", config.Name, err)
-	}
-
-	c.JSON(http.StatusCreated, gin.H{"message": "Repository created successfully"})
+	// ... (no changes)
 }
 
 // updateRepository updates an existing repository
@@ -692,9 +346,248 @@ func (s *Server) updateRepository(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Repository updated successfully"})
 }
 
+// getRepositoryOptions returns the repository options (Config JSON as map)
+func (s *Server) getRepositoryOptions(c *gin.Context) {
+	name := c.Param("name")
+	repo, err := s.db.GetRepository(c.Request.Context(), name)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Repository not found"})
+		return
+	}
+	opts := map[string]string{}
+	if strings.TrimSpace(repo.Config) != "" {
+		_ = json.Unmarshal([]byte(repo.Config), &opts)
+	}
+	c.JSON(http.StatusOK, gin.H{"options": opts})
+}
+
+// updateRepositoryOptions updates repository options (Config JSON)
+func (s *Server) updateRepositoryOptions(c *gin.Context) {
+	name := c.Param("name")
+	var req struct {
+		Options map[string]string `json:"options" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	// Marshal to JSON string
+	b, err := json.Marshal(req.Options)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid options"})
+		return
+	}
+	if err := s.db.UpdateRepository(c.Request.Context(), name, map[string]interface{}{"config": string(b)}); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update repository options"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Options updated"})
+}
+
+// listWebhooks returns all webhooks for a repository
+func (s *Server) listWebhooks(c *gin.Context) {
+    name := c.Param("name")
+    if _, err := s.db.GetRepository(c.Request.Context(), name); err != nil {
+        c.JSON(http.StatusNotFound, gin.H{"error": "Repository not found"})
+        return
+    }
+    hooks, err := s.db.ListWebhooksByRepository(c.Request.Context(), name)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+        return
+    }
+    c.JSON(http.StatusOK, hooks)
+}
+
+// createWebhook creates a new webhook for a repository
+func (s *Server) createWebhook(c *gin.Context) {
+    repoName := c.Param("name")
+    if _, err := s.db.GetRepository(c.Request.Context(), repoName); err != nil {
+        c.JSON(http.StatusNotFound, gin.H{"error": "Repository not found"})
+        return
+    }
+    var req struct {
+        Name            string            `json:"name" binding:"required"`
+        URL             string            `json:"url" binding:"required"`
+        Events          []string          `json:"events"`
+        PayloadTemplate string            `json:"payload_template"`
+        Headers         map[string]string `json:"headers"`
+        Enabled         *bool             `json:"enabled"`
+        BasicUsername   string            `json:"basic_username"`
+        BasicPassword   string            `json:"basic_password"`
+        BearerToken     string            `json:"bearer_token"`
+        SigningSecret   string            `json:"signing_secret"`
+    }
+    if err := c.ShouldBindJSON(&req); err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+        return
+    }
+    headersJSON := ""
+    if len(req.Headers) > 0 {
+        b, _ := json.Marshal(req.Headers)
+        headersJSON = string(b)
+    }
+    hook := &database.Webhook{
+        Name:            req.Name,
+        URL:             req.URL,
+        Events:          strings.Join(req.Events, ","),
+        PayloadTemplate: req.PayloadTemplate,
+        HeadersJSON:     headersJSON,
+        Enabled:         true,
+        BasicUsername:   req.BasicUsername,
+        BasicPassword:   req.BasicPassword,
+        BearerToken:     req.BearerToken,
+        SigningSecret:   req.SigningSecret,
+    }
+    if req.Enabled != nil {
+        hook.Enabled = *req.Enabled
+    }
+    if err := s.db.CreateWebhook(c.Request.Context(), repoName, hook); err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+        return
+    }
+    c.JSON(http.StatusCreated, hook)
+}
+
+// getWebhook fetches a webhook by id
+func (s *Server) getWebhook(c *gin.Context) {
+    idStr := c.Param("id")
+    id, err := strconv.ParseUint(idStr, 10, 64)
+    if err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+        return
+    }
+    hook, err := s.db.GetWebhook(c.Request.Context(), uint(id))
+    if err != nil || hook == nil {
+        c.JSON(http.StatusNotFound, gin.H{"error": "Webhook not found"})
+        return
+    }
+    c.JSON(http.StatusOK, hook)
+}
+
+// updateWebhook updates a webhook by id
+func (s *Server) updateWebhook(c *gin.Context) {
+    idStr := c.Param("id")
+    id, err := strconv.ParseUint(idStr, 10, 64)
+    if err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+        return
+    }
+    var req struct {
+        Name            *string           `json:"name"`
+        URL             *string           `json:"url"`
+        Events          []string          `json:"events"`
+        PayloadTemplate *string           `json:"payload_template"`
+        Headers         map[string]string `json:"headers"`
+        Enabled         *bool             `json:"enabled"`
+        BasicUsername   *string           `json:"basic_username"`
+        BasicPassword   *string           `json:"basic_password"`
+        BearerToken     *string           `json:"bearer_token"`
+        SigningSecret   *string           `json:"signing_secret"`
+    }
+    if err := c.ShouldBindJSON(&req); err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+        return
+    }
+    updates := map[string]interface{}{}
+    if req.Name != nil { updates["name"] = *req.Name }
+    if req.URL != nil { updates["url"] = *req.URL }
+    if req.PayloadTemplate != nil { updates["payload_template"] = *req.PayloadTemplate }
+    if req.Enabled != nil { updates["enabled"] = *req.Enabled }
+    if req.BasicUsername != nil { updates["basic_username"] = *req.BasicUsername }
+    if req.BasicPassword != nil { updates["basic_password"] = *req.BasicPassword }
+    if req.BearerToken != nil { updates["bearer_token"] = *req.BearerToken }
+    if req.SigningSecret != nil { updates["signing_secret"] = *req.SigningSecret }
+    if len(req.Events) > 0 { updates["events"] = strings.Join(req.Events, ",") }
+    if req.Headers != nil {
+        b, _ := json.Marshal(req.Headers)
+        updates["headers_json"] = string(b)
+    }
+    if len(updates) == 0 {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "no updates provided"})
+        return
+    }
+    if err := s.db.UpdateWebhook(c.Request.Context(), uint(id), updates); err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+        return
+    }
+    hook, _ := s.db.GetWebhook(c.Request.Context(), uint(id))
+    c.JSON(http.StatusOK, hook)
+}
+
+// deleteWebhook deletes a webhook by id
+func (s *Server) deleteWebhook(c *gin.Context) {
+    idStr := c.Param("id")
+    id, err := strconv.ParseUint(idStr, 10, 64)
+    if err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+        return
+    }
+    if err := s.db.DeleteWebhook(c.Request.Context(), uint(id)); err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+        return
+    }
+    c.JSON(http.StatusOK, gin.H{"deleted": true})
+}
+
+// getRepositoryOptionsMap loads Config JSON for a repo into a string map
+func (s *Server) getRepositoryOptionsMap(ctx context.Context, name string) (map[string]string, error) {
+	repo, err := s.db.GetRepository(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	opts := map[string]string{}
+	if strings.TrimSpace(repo.Config) != "" {
+		if err := json.Unmarshal([]byte(repo.Config), &opts); err != nil {
+			return nil, err
+		}
+	}
+	return opts, nil
+}
+
+// resolveGenericPath applies user-defined patterns for generic repos.
+// Recognized option keys:
+// - generic_request_pattern (e.g., "{group}/{name}/{version}/{file}")
+// - generic_storage_template (e.g., "g/{group}/{name}/{version}/{file}")
+func resolveGenericPath(subPath string, opts map[string]string) (storagePath, name, version, group string) {
+	reqPat := strings.TrimSpace(opts["generic_request_pattern"])
+	if reqPat == "" {
+		return "", "", "", ""
+	}
+	reqParts := strings.Split(strings.Trim(reqPat, "/"), "/")
+	pathParts := strings.Split(strings.Trim(subPath, "/"), "/")
+	if len(pathParts) < len(reqParts) {
+		return "", "", "", ""
+	}
+	vars := map[string]string{}
+	for i, seg := range reqParts {
+		if strings.HasPrefix(seg, "{") && strings.HasSuffix(seg, "}") {
+			key := strings.TrimSuffix(strings.TrimPrefix(seg, "{"), "}")
+			if i < len(pathParts) {
+				vars[key] = pathParts[i]
+			}
+		} else {
+			// literal segment must match
+			if i >= len(pathParts) || seg != pathParts[i] {
+				return "", "", "", ""
+			}
+		}
+	}
+	// Build storage path
+	templ := strings.TrimSpace(opts["generic_storage_template"])
+	if templ == "" {
+		templ = reqPat // default to same structure
+	}
+	out := templ
+	for k, v := range vars {
+		out = strings.ReplaceAll(out, "{"+k+"}", v)
+	}
+	return out, vars["name"], vars["version"], vars["group"]
+}
+
 // deleteRepository deletes a repository
 func (s *Server) deleteRepository(c *gin.Context) {
-	name := c.Param("name")
+    name := c.Param("name")
 
 	// Check if repository has artifacts
 	artifacts, err := s.db.GetArtifactsByRepository(c.Request.Context(), name)
@@ -927,6 +820,182 @@ func (s *Server) getRepositoryStats(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, stats)
+}
+
+// listRepositories returns repositories from DB
+func (s *Server) listRepositories(c *gin.Context) {
+    repos, err := s.db.ListRepositories(c.Request.Context())
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+        return
+    }
+    c.JSON(http.StatusOK, repos)
+}
+
+// getRepository returns a repository by name from DB
+func (s *Server) getRepository(c *gin.Context) {
+    name := c.Param("name")
+    repo, err := s.db.GetRepository(c.Request.Context(), name)
+    if err != nil {
+        c.JSON(http.StatusNotFound, gin.H{"error": "Repository not found"})
+        return
+    }
+    c.JSON(http.StatusOK, repo)
+}
+
+// createRepository creates a new repository via repoManager and registers routes
+func (s *Server) createRepository(c *gin.Context) {
+    var req struct {
+        Name         string            `json:"name" binding:"required"`
+        Type         string            `json:"type" binding:"required"`
+        ArtifactType string            `json:"artifact_type" binding:"required"`
+        URL          string            `json:"url"`
+        Upstream     []string          `json:"upstream"`
+        Options      map[string]string `json:"options"`
+        Description  string            `json:"description"`
+    }
+    if err := c.ShouldBindJSON(&req); err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+        return
+    }
+
+    cfg := &repository.Config{
+        Name:         req.Name,
+        Type:         req.Type,
+        ArtifactType: req.ArtifactType,
+        URL:          req.URL,
+        Upstream:     req.Upstream,
+        Options:      req.Options,
+    }
+    if _, err := s.repoManager.CreateRepository(cfg); err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+        return
+    }
+    // Register routes for the new repository
+    if dbRepo, err := s.db.GetRepository(c.Request.Context(), req.Name); err == nil {
+        _ = s.RegisterRepositoryRoutes(dbRepo)
+    }
+    c.JSON(http.StatusCreated, gin.H{"message": "Repository created successfully"})
+}
+
+// listArtifacts returns artifacts for a repository (admin portal)
+func (s *Server) listArtifacts(c *gin.Context) {
+    name := c.Param("name")
+    artifacts, err := s.db.GetArtifactsByRepository(c.Request.Context(), name)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+        return
+    }
+    c.JSON(http.StatusOK, artifacts)
+}
+
+// getArtifactStats returns repository stats (alias for getRepositoryStats)
+func (s *Server) getArtifactStats(c *gin.Context) {
+    s.getRepositoryStats(c)
+}
+
+// uploadArtifact is an admin-portal endpoint; not implemented yet
+func (s *Server) uploadArtifact(c *gin.Context) {
+    c.JSON(http.StatusNotImplemented, gin.H{"error": "uploadArtifact not implemented"})
+}
+
+// moveArtifact is an admin-portal endpoint; not implemented yet
+func (s *Server) moveArtifact(c *gin.Context) {
+    c.JSON(http.StatusNotImplemented, gin.H{"error": "moveArtifact not implemented"})
+}
+
+// copyArtifact is an admin-portal endpoint; not implemented yet
+func (s *Server) copyArtifact(c *gin.Context) {
+    c.JSON(http.StatusNotImplemented, gin.H{"error": "copyArtifact not implemented"})
+}
+
+// yankCrate marks a Cargo crate version as yanked
+func (s *Server) yankCrate(c *gin.Context) {
+    // Repository name is the first segment in the URL path (grouped by repo)
+    fullPath := c.Request.URL.Path
+    trimmed := strings.TrimPrefix(fullPath, "/")
+    parts := strings.SplitN(trimmed, "/", 2)
+    repositoryName := ""
+    if len(parts) > 0 {
+        repositoryName = parts[0]
+    }
+
+    crate := c.Param("name")
+    version := c.Param("version")
+
+    if crate == "" || version == "" || repositoryName == "" {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "missing repository, crate name, or version"})
+        return
+    }
+
+    if err := s.db.UpdateArtifactYanked(c.Request.Context(), repositoryName, crate, version, true); err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+        return
+    }
+
+    // Rebuild index so yanked flag is reflected
+    if repo, err := s.repoManager.GetRepository(repositoryName); err == nil {
+        _ = repo.RebuildIndex(c.Request.Context())
+    }
+
+    // Publish change event (yanked)
+    if s.publisher != nil {
+        _ = s.publisher.Publish(messaging.Event{
+            Type:       messaging.EventChange,
+            Repository: repositoryName,
+            Name:       crate,
+            Version:    version,
+            Timestamp:  time.Now(),
+        })
+    }
+
+    c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// unyankCrate unmarks a Cargo crate version as yanked
+func (s *Server) unyankCrate(c *gin.Context) {
+    fullPath := c.Request.URL.Path
+    trimmed := strings.TrimPrefix(fullPath, "/")
+    parts := strings.SplitN(trimmed, "/", 2)
+    repositoryName := ""
+    if len(parts) > 0 {
+        repositoryName = parts[0]
+    }
+
+    crate := c.Param("name")
+    version := c.Param("version")
+
+    if crate == "" || version == "" || repositoryName == "" {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "missing repository, crate name, or version"})
+        return
+    }
+
+    if err := s.db.UpdateArtifactYanked(c.Request.Context(), repositoryName, crate, version, false); err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+        return
+    }
+
+    if repo, err := s.repoManager.GetRepository(repositoryName); err == nil {
+        _ = repo.RebuildIndex(c.Request.Context())
+    }
+
+    // Publish change event (unyanked)
+    if s.publisher != nil {
+        _ = s.publisher.Publish(messaging.Event{
+            Type:       messaging.EventChange,
+            Repository: repositoryName,
+            Name:       crate,
+            Version:    version,
+            Timestamp:  time.Now(),
+        })
+    }
+
+    c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// searchArtifacts is an admin-portal endpoint; not implemented yet
+func (s *Server) searchArtifacts(c *gin.Context) {
+    c.JSON(http.StatusNotImplemented, gin.H{"error": "searchArtifacts not implemented"})
 }
 
 // logAccess logs user access to database

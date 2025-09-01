@@ -1,0 +1,64 @@
+<div class="app-container" *ngIf="!isLoginPage">
+  <mat-toolbar color="primary" class="app-header">
+    <button mat-icon-button (click)="toggleSidebar()">
+      <mat-icon>menu</mat-icon>
+    </button>
+    <span class="header-title">Ganje Admin Portal</span>
+    <span class="spacer"></span>
+    <span class="user-info">{{ user?.username || 'Guest' }}</span>
+    <button mat-icon-button [matMenuTriggerFor]="userMenu">
+      <mat-icon>account_circle</mat-icon>
+    </button>
+    <mat-menu #userMenu="matMenu">
+      <button mat-menu-item>
+        <mat-icon>person</mat-icon>
+        <span>Profile</span>
+      </button>
+      <button mat-menu-item>
+        <mat-icon>settings</mat-icon>
+        <span>Settings</span>
+      </button>
+      <button mat-menu-item (click)="logout()">
+        <mat-icon>logout</mat-icon>
+        <span>Logout</span>
+      </button>
+    </mat-menu>
+  </mat-toolbar>
+
+  <mat-sidenav-container class="sidenav-container">
+    <mat-sidenav #drawer class="sidenav" mode="side" opened>
+      <mat-nav-list>
+        <a mat-list-item routerLink="/dashboard" routerLinkActive="active">
+          <mat-icon matListItemIcon>dashboard</mat-icon>
+          <span matListItemTitle>Dashboard</span>
+        </a>
+        <a mat-list-item routerLink="/repositories" routerLinkActive="active">
+          <mat-icon matListItemIcon>archive</mat-icon>
+          <span matListItemTitle>Repositories</span>
+        </a>
+        <a mat-list-item routerLink="/artifacts" routerLinkActive="active">
+          <mat-icon matListItemIcon>inventory</mat-icon>
+          <span matListItemTitle>Artifacts</span>
+        </a>
+        <mat-divider *ngIf="isAdmin"></mat-divider>
+        <h3 matSubheader *ngIf="isAdmin">Administration</h3>
+        <a mat-list-item routerLink="/dex-config" routerLinkActive="active" *ngIf="isAdmin">
+          <mat-icon matListItemIcon>security</mat-icon>
+          <span matListItemTitle>Dex Configuration</span>
+        </a>
+        <a mat-list-item routerLink="/users" routerLinkActive="active" *ngIf="isAdmin">
+          <mat-icon matListItemIcon>people</mat-icon>
+          <span matListItemTitle>User Management</span>
+        </a>
+      </mat-nav-list>
+    </mat-sidenav>
+
+    <mat-sidenav-content class="main-content">
+      <router-outlet></router-outlet>
+    </mat-sidenav-content>
+  </mat-sidenav-container>
+</div>
+
+<div class="login-layout" *ngIf="isLoginPage">
+  <router-outlet></router-outlet>
+</div>

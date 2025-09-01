@@ -31,23 +31,26 @@ func (p *PyPIArtifact) GetArtifactMetadata() *artifact.Metadata {
 
 // GetPath returns the storage path for PyPI packages
 func (p *PyPIArtifact) GetPath() string {
-	return fmt.Sprintf("packages/%s/%s/%s-%s.tar.gz", 
-		strings.ToLower(p.metadata.Name[:1]), 
-		strings.ToLower(p.metadata.Name), 
-		p.metadata.Name, 
+	return fmt.Sprintf("packages/%s/%s-%s.tar.gz",
+		strings.ToLower(p.metadata.Name),
+		p.metadata.Name,
 		p.metadata.Version)
 }
 
 // GetIndexPath returns the index path for PyPI packages
 func (p *PyPIArtifact) GetIndexPath() string {
-	return fmt.Sprintf("simple/%s/", strings.ToLower(p.metadata.Name))
+	return fmt.Sprintf("simple/%s/", normalizeProjectName(p.metadata.Name))
 }
 
 // ValidatePath validates PyPI package path
 func (p *PyPIArtifact) ValidatePath(path string) error {
 	patterns := []string{
-		`^packages/[a-z]/[a-z0-9._-]+/[a-zA-Z0-9._-]+-[a-zA-Z0-9._-]+\.(tar\.gz|whl)$`,
-		`^simple/[a-z0-9._-]+/$`,
+		`^simple/$`,
+		`^simple/[A-Za-z0-9][A-Za-z0-9._-]*/$`,
+		// Accept common Simple API file layouts
+		`^packages/[A-Za-z0-9._-]+/[A-Za-zA-Z0-9._-]+-(?:[0-9][^-]*)[^/]*\.(?:tar\.gz|whl)$`,
+		// Also accept deeper paths under packages (e.g., hashed dirs)
+		`^packages/.+/[A-Za-zA-Z0-9._-]+-(?:[0-9][^-]*)[^/]*\.(?:tar\.gz|whl)$`,
 	}
 
 	for _, pattern := range patterns {
@@ -70,33 +73,48 @@ func (p *PyPIArtifact) ParsePath(path string) (*artifact.ArtifactInfo, error) {
 
 	if strings.HasPrefix(path, "packages/") {
 		parts := strings.Split(path, "/")
-		if len(parts) < 4 {
+		if len(parts) < 3 {
 			return nil, fmt.Errorf("invalid PyPI package path structure")
 		}
-		
-		packageName := parts[2]
-		filename := parts[3]
-		
-		// Extract version from filename
-		var version string
-		if strings.HasSuffix(filename, ".tar.gz") {
-			nameVersion := strings.TrimSuffix(filename, ".tar.gz")
-			version = strings.TrimPrefix(nameVersion, packageName+"-")
-		} else if strings.HasSuffix(filename, ".whl") {
-			nameVersion := strings.TrimSuffix(filename, ".whl")
-			parts := strings.Split(nameVersion, "-")
-			if len(parts) >= 2 {
-				version = parts[1]
+
+		// Filename is always the last segment
+		filename := parts[len(parts)-1]
+
+		// Extract distribution name and version from filename per wheel/sdist conventions
+		var dist, version, ext string
+		if strings.HasSuffix(strings.ToLower(filename), ".tar.gz") {
+			ext = ".tar.gz"
+			base := strings.TrimSuffix(filename, ".tar.gz")
+			// sdist: {name}-{version}
+			re := regexp.MustCompile(`^(.+)-([0-9][^-]*)$`)
+			m := re.FindStringSubmatch(base)
+			if len(m) == 3 {
+				dist, version = m[1], m[2]
+			}
+		} else if strings.HasSuffix(strings.ToLower(filename), ".whl") {
+			ext = ".whl"
+			base := strings.TrimSuffix(filename, ".whl")
+			// wheel: {name}-{version}-(rest)
+			re := regexp.MustCompile(`^(.+)-([0-9][^-]*)-.*$`)
+			m := re.FindStringSubmatch(base)
+			if len(m) == 3 {
+				dist, version = m[1], m[2]
 			}
 		}
-		
+
+		if dist == "" || version == "" {
+			return nil, fmt.Errorf("unable to parse filename: %s", filename)
+		}
+
 		return &artifact.ArtifactInfo{
-			Name:    packageName,
+			Name:    dist,
 			Version: version,
 			Type:    artifact.ArtifactTypePyPI,
 			Path:    path,
 			Metadata: map[string]string{
-				"filename": filename,
+				"filename":  filename,
+				"extension": ext,
+				"project":   normalizeProjectName(dist),
 			},
 		}, nil
 	}
@@ -106,10 +124,9 @@ func (p *PyPIArtifact) ParsePath(path string) (*artifact.ArtifactInfo, error) {
 
 // GeneratePath creates a storage path for the artifact
 func (p *PyPIArtifact) GeneratePath(info *artifact.ArtifactInfo) string {
-	return fmt.Sprintf("packages/%s/%s/%s-%s.tar.gz", 
-		strings.ToLower(info.Name[:1]), 
-		strings.ToLower(info.Name), 
-		info.Name, 
+	return fmt.Sprintf("packages/%s/%s-%s.tar.gz",
+		strings.ToLower(info.Name),
+		info.Name,
 		info.Version)
 }
 
@@ -167,4 +184,13 @@ func (p *PyPIArtifact) GetEndpoints() []string {
 		"GET /packages/{hash}/{filename}",
 		"POST /legacy/",
 	}
+}
+
+// normalizeProjectName applies PEP 503 normalization rules:
+// - convert to lowercase
+// - replace runs of '-', '_' and '.' with a single '-' character
+func normalizeProjectName(name string) string {
+	lower := strings.ToLower(name)
+	re := regexp.MustCompile(`[-_.]+`)
+	return re.ReplaceAllString(lower, "-")
 }

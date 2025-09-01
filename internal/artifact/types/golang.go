@@ -41,13 +41,17 @@ func (g *GoModuleArtifact) GetIndexPath() string {
 
 // ValidatePath validates Go module path
 func (g *GoModuleArtifact) ValidatePath(path string) error {
-	// Go module proxy paths
+	// Go module proxy paths per protocol
+	// Module path: sequence of path segments with allowed chars
+	// Version can be semantic or pseudo (allow a broad pattern)
+	module := `[A-Za-z0-9._\-]+(?:/[A-Za-z0-9._\-]+)*`
+	version := `[^/]+` // accept broad version tokens (vX.Y.Z, pseudo, +incompatible, etc.)
 	patterns := []string{
-		`^[a-zA-Z0-9._/-]+/@v/v[0-9]+\.[0-9]+\.[0-9]+.*\.zip$`,
-		`^[a-zA-Z0-9._/-]+/@v/v[0-9]+\.[0-9]+\.[0-9]+.*\.info$`,
-		`^[a-zA-Z0-9._/-]+/@v/v[0-9]+\.[0-9]+\.[0-9]+.*\.mod$`,
-		`^[a-zA-Z0-9._/-]+/@v/list$`,
-		`^[a-zA-Z0-9._/-]+/@latest$`,
+		`^` + module + `/@v/` + version + `\.zip$`,
+		`^` + module + `/@v/` + version + `\.info$`,
+		`^` + module + `/@v/` + version + `\.mod$`,
+		`^` + module + `/@v/list$`,
+		`^` + module + `/@latest$`,
 	}
 
 	for _, pattern := range patterns {
@@ -68,15 +72,42 @@ func (g *GoModuleArtifact) ParsePath(path string) (*artifact.ArtifactInfo, error
 		return nil, err
 	}
 
+	// list endpoint
+	if strings.HasSuffix(path, "/@v/list") {
+		moduleName := strings.TrimSuffix(path, "/@v/list")
+		return &artifact.ArtifactInfo{
+			Name: moduleName,
+			Type: artifact.ArtifactTypeGolang,
+			Path: path,
+			Metadata: map[string]string{
+				"kind": "list",
+			},
+		}, nil
+	}
+
+	// latest endpoint
+	if strings.HasSuffix(path, "/@latest") {
+		moduleName := strings.TrimSuffix(path, "/@latest")
+		return &artifact.ArtifactInfo{
+			Name: moduleName,
+			Type: artifact.ArtifactTypeGolang,
+			Path: path,
+			Metadata: map[string]string{
+				"kind": "latest",
+			},
+		}, nil
+	}
+
+	// versioned files under @v
 	parts := strings.Split(path, "/@v/")
 	if len(parts) != 2 {
 		return nil, fmt.Errorf("invalid Go module path structure")
 	}
-
 	moduleName := parts[0]
 	versionPart := parts[1]
 
-	if strings.HasSuffix(versionPart, ".zip") {
+	switch {
+	case strings.HasSuffix(versionPart, ".zip"):
 		version := strings.TrimSuffix(versionPart, ".zip")
 		return &artifact.ArtifactInfo{
 			Name:    moduleName,
@@ -84,7 +115,32 @@ func (g *GoModuleArtifact) ParsePath(path string) (*artifact.ArtifactInfo, error
 			Type:    artifact.ArtifactTypeGolang,
 			Path:    path,
 			Metadata: map[string]string{
-				"type": "module",
+				"kind":     "zip",
+				"filename": version + ".zip",
+			},
+		}, nil
+	case strings.HasSuffix(versionPart, ".mod"):
+		version := strings.TrimSuffix(versionPart, ".mod")
+		return &artifact.ArtifactInfo{
+			Name:    moduleName,
+			Version: version,
+			Type:    artifact.ArtifactTypeGolang,
+			Path:    path,
+			Metadata: map[string]string{
+				"kind":     "mod",
+				"filename": version + ".mod",
+			},
+		}, nil
+	case strings.HasSuffix(versionPart, ".info"):
+		version := strings.TrimSuffix(versionPart, ".info")
+		return &artifact.ArtifactInfo{
+			Name:    moduleName,
+			Version: version,
+			Type:    artifact.ArtifactTypeGolang,
+			Path:    path,
+			Metadata: map[string]string{
+				"kind":     "info",
+				"filename": version + ".info",
 			},
 		}, nil
 	}

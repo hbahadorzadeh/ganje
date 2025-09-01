@@ -40,7 +40,7 @@ func (r *RouteRegistry) registerDefaults() {
 	r.registrars[artifact.ArtifactTypeRubyGems] = NewRubyGemsRouteRegistrar()
 	r.registrars[artifact.ArtifactTypeTerraform] = NewTerraformRouteRegistrar()
 	r.registrars[artifact.ArtifactTypeAnsible] = NewAnsibleRouteRegistrar()
-	r.registrars[artifact.ArtifactTypeConan] = NewConanRouteRegistrar()
+	r.registrars[artifact.ArtifactTypeBazel] = NewBazelRouteRegistrar()
 	r.registrars[artifact.ArtifactTypeGeneric] = NewGenericRouteRegistrar()
 }
 

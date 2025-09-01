@@ -24,6 +24,38 @@ type MockDB struct {
 	mock.Mock
 }
 
+func TestTerraformDownloadReturns204AndHeader(t *testing.T) {
+    server, _, _, mockAuthService := createTestServer()
+
+    // Setup auth mocks
+    mockAuthService.On("ValidateToken", "Bearer valid-token").Return(&auth.Claims{
+        Username: "testuser",
+        Email:    "test@example.com",
+        Realms:   []string{"admin"},
+    }, nil)
+    mockAuthService.On("CheckPermission", mock.AnythingOfType("*auth.Claims"), mock.AnythingOfType("string"), auth.PermissionRead).Return(true)
+
+    // Manually register Terraform routes under a repo group
+    registrar := NewTerraformRouteRegistrar()
+    group := server.router.Group("/tfrepo")
+    registrar.RegisterRoutes(group, server)
+
+    // Perform request
+    path := "/tfrepo/v1/modules/ns/name/prov/1.0.0/download"
+    req := createAuthenticatedRequest("GET", path, nil)
+    w := httptest.NewRecorder()
+    server.router.ServeHTTP(w, req)
+
+    // Assert 204 and header present
+    assert.Equal(t, http.StatusNoContent, w.Code)
+    hdr := w.Header().Get("X-Terraform-Get")
+    assert.NotEmpty(t, hdr)
+    // Expect absolute URL with default host from httptest
+    assert.Equal(t, "http://example.com"+path, hdr)
+
+    mockAuthService.AssertExpectations(t)
+}
+
 func (m *MockDB) GetRepository(ctx context.Context, name string) (*database.Repository, error) {
 	args := m.Called(ctx, name)
 	if args.Get(0) == nil {
@@ -112,6 +144,48 @@ func (m *MockDB) GetRepositoryStatistics(ctx context.Context, repositoryName str
 
 func (m *MockDB) LogAccess(ctx context.Context, log *database.AccessLog) error {
 	args := m.Called(ctx, log)
+	return args.Error(0)
+}
+
+func (m *MockDB) UpdateArtifactYanked(ctx context.Context, repositoryName, name, version string, yanked bool) error {
+	args := m.Called(ctx, repositoryName, name, version, yanked)
+	return args.Error(0)
+}
+
+// Webhook methods to satisfy DatabaseInterface
+func (m *MockDB) CreateWebhook(ctx context.Context, repoName string, hook *database.Webhook) error {
+	args := m.Called(ctx, repoName, hook)
+	return args.Error(0)
+}
+
+func (m *MockDB) UpdateWebhook(ctx context.Context, id uint, updates map[string]interface{}) error {
+	args := m.Called(ctx, id, updates)
+	return args.Error(0)
+}
+
+func (m *MockDB) DeleteWebhook(ctx context.Context, id uint) error {
+	args := m.Called(ctx, id)
+	return args.Error(0)
+}
+
+func (m *MockDB) GetWebhook(ctx context.Context, id uint) (*database.Webhook, error) {
+	args := m.Called(ctx, id)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*database.Webhook), args.Error(1)
+}
+
+func (m *MockDB) ListWebhooksByRepository(ctx context.Context, repoName string) ([]*database.Webhook, error) {
+	args := m.Called(ctx, repoName)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]*database.Webhook), args.Error(1)
+}
+
+func (m *MockDB) RecordWebhookDelivery(ctx context.Context, delivery *database.WebhookDelivery) error {
+	args := m.Called(ctx, delivery)
 	return args.Error(0)
 }
 

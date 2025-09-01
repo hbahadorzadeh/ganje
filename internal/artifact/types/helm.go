@@ -1,13 +1,15 @@
 package types
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"regexp"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/hbahadorzadeh/ganje/internal/artifact"
+	yaml "gopkg.in/yaml.v3"
 )
 
 // HelmArtifact implements Helm chart artifact handling
@@ -116,50 +118,54 @@ func (h *HelmArtifact) GetMetadata(content io.Reader) (map[string]string, error)
 // GenerateIndex generates Helm repository index.yaml
 func (h *HelmArtifact) GenerateIndex(artifacts []*artifact.ArtifactInfo) ([]byte, error) {
 	type HelmChart struct {
-		APIVersion  string `yaml:"apiVersion"`
-		Name        string `yaml:"name"`
-		Version     string `yaml:"version"`
-		Description string `yaml:"description,omitempty"`
-		Created     string `yaml:"created"`
-		Digest      string `yaml:"digest"`
+		APIVersion  string   `yaml:"apiVersion"`
+		Name        string   `yaml:"name"`
+		Version     string   `yaml:"version"`
+		Description string   `yaml:"description,omitempty"`
+		Created     string   `yaml:"created"`
+		Digest      string   `yaml:"digest,omitempty"`
 		URLs        []string `yaml:"urls"`
 	}
 
 	type HelmIndex struct {
-		APIVersion string                       `yaml:"apiVersion"`
-		Generated  string                       `yaml:"generated"`
-		Entries    map[string][]HelmChart      `yaml:"entries"`
+		APIVersion string                 `yaml:"apiVersion"`
+		Generated  string                 `yaml:"generated"`
+		Entries    map[string][]HelmChart `yaml:"entries"`
 	}
 
 	index := HelmIndex{
 		APIVersion: "v1",
-		Generated:  "2023-01-01T00:00:00Z",
+		Generated:  time.Now().UTC().Format(time.RFC3339),
 		Entries:    make(map[string][]HelmChart),
 	}
 
+	// group by chart name
+	groups := map[string][]*artifact.ArtifactInfo{}
 	for _, art := range artifacts {
-		chart := HelmChart{
-			APIVersion: "v2",
-			Name:       art.Name,
-			Version:    art.Version,
-			Created:    art.UploadTime.Format("2006-01-02T15:04:05Z"),
-			Digest:     art.Checksum,
-			URLs:       []string{art.Path},
-		}
-
-		if index.Entries[art.Name] == nil {
-			index.Entries[art.Name] = []HelmChart{}
-		}
-		index.Entries[art.Name] = append(index.Entries[art.Name], chart)
+		groups[art.Name] = append(groups[art.Name], art)
 	}
 
-	// Convert to YAML (using JSON as intermediate for simplicity)
-	jsonData, err := json.Marshal(index)
-	if err != nil {
-		return nil, err
+	for name, list := range groups {
+		// sort by version descending lexicographically (approximate)
+		sort.Slice(list, func(i, j int) bool { return list[i].Version > list[j].Version })
+		for _, art := range list {
+			created := art.UploadTime
+			if created.IsZero() {
+				created = time.Unix(0, 0).UTC()
+			}
+			chart := HelmChart{
+				APIVersion: "v2",
+				Name:       name,
+				Version:    art.Version,
+				Created:    created.Format(time.RFC3339),
+				Digest:     art.Checksum,
+				URLs:       []string{art.Path},
+			}
+			index.Entries[name] = append(index.Entries[name], chart)
+		}
 	}
 
-	return jsonData, nil
+	return yaml.Marshal(index)
 }
 
 // GetEndpoints returns Helm repository standard endpoints

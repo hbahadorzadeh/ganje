@@ -1,6 +1,8 @@
 package server
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 
@@ -150,14 +152,22 @@ func (rm *RepositoryManager) CreateRepository(config *repository.Config) (reposi
 	}
 
 	// Save repository to database
+	var cfgJSON string
+	if config.Options != nil {
+		if b, err := json.Marshal(config.Options); err == nil {
+			cfgJSON = string(b)
+		}
+	}
+
 	dbRepo := &database.Repository{
 		Name:         config.Name,
 		Type:         config.Type,
 		ArtifactType: config.ArtifactType,
 		URL:          config.URL,
+		Config:       cfgJSON,
 	}
 
-	if err := rm.db.SaveRepository(nil, dbRepo); err != nil {
+	if err := rm.db.SaveRepository(context.TODO(), dbRepo); err != nil {
 		return nil, fmt.Errorf("failed to save repository to database: %w", err)
 	}
 
@@ -180,7 +190,7 @@ func (rm *RepositoryManager) DeleteRepository(name string) error {
 	}
 
 	// Delete from database
-	if err := rm.db.DeleteRepository(nil, name); err != nil {
+	if err := rm.db.DeleteRepository(context.TODO(), name); err != nil {
 		return fmt.Errorf("failed to delete repository from database: %w", err)
 	}
 

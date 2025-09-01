@@ -17,7 +17,7 @@ Ganje is a comprehensive web server artifact repository application that support
 - **Ansible Galaxy** - Ansible collections
 - **Terraform** - Terraform modules
 - **Generic** - Generic file storage
-- **Canon** - Custom artifact format
+- **Bazel Remote Cache** - HTTP remote cache compatible with Bazel's /ac and /cas endpoints
 
 ### Repository Types
 1. **Local** - Stores artifacts and indexes locally (push and pull)
@@ -46,6 +46,19 @@ Ganje is a comprehensive web server artifact repository application that support
 │   Artifact      │    │    Storage      │    │    Database     │
 │   Factory       │    │   (Local FS)    │    │ (PostgreSQL)    │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
+
+           ┌─────────────────────────────── Messaging (RabbitMQ) ────────────────────────────────┐
+           │                                                                                      │
+           │   ┌───────────────────────┐         publish events        ┌───────────────────────┐  │
+           │   │      HTTP Server      │ ─────────────────────────────► │  Exchange/Queue(s)   │  │
+           │   └───────────────────────┘                                └───────────────────────┘  │
+           │                                                                          │            │
+           │                                              consume artifact events      ▼            │
+           │                                                       ┌───────────────────────────┐   │
+           │                                                       │  Webhook Dispatcher (CMD) │   │
+           │                                                       │  async + retries + HMAC   │   │
+           │                                                       └───────────────────────────┘   │
+           └───────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Installation
@@ -101,12 +114,49 @@ repositories:
     type: "remote"
     artifact_type: "npm"
     url: "https://registry.npmjs.org"
+  - name: "bazel-cache"
+    type: "local"
+    artifact_type: "bazel"
+
+messaging:
+  rabbitmq:
+    enabled: true
+    url: "amqp://guest:guest@localhost:5672/"
+    exchange: "ganje.events"
+    exchange_type: "topic"
+    routing_key: "artifact.*"
+
+webhook:
+  enabled: true
+  workers: 4
+  max_retries: 5
+  initial_backoff_ms: 500
+  max_backoff_ms: 30000
+  http_timeout_ms: 10000
 ```
 
 ### Running
 ```bash
 ./ganje
 ```
+
+### Running the Webhook Dispatcher (standalone)
+
+The webhook dispatcher runs as a separate process that consumes artifact events from RabbitMQ and delivers configured webhooks asynchronously with retries and optional HMAC signing.
+
+```bash
+# from repository root
+go run ./cmd/webhook-dispatcher --config config.yaml
+
+# optionally specify a durable queue name
+go run ./cmd/webhook-dispatcher --config config.yaml --queue ganje-webhooks
+```
+
+Requirements:
+
+- `messaging.rabbitmq.enabled: true` and a reachable broker.
+- `webhook.enabled: true` and database configured.
+- Webhooks can be managed via the admin API under `/api/v1/repositories/:name/webhooks`.
 
 ## API Endpoints
 
@@ -142,6 +192,34 @@ Each repository supports standard endpoints for its artifact type:
 ### Authentication
 All endpoints require JWT authentication via `Authorization: Bearer <token>` header.
 
+### Bazel Remote Cache
+Once a repository is created with `artifact_type: "bazel"`, it exposes Bazel HTTP cache endpoints:
+
+- `/{repo}/ac/*key` — Action Cache (AC)
+- `/{repo}/cas/*digest` — Content Addressable Store (CAS)
+
+Example Bazel flags:
+
+```bash
+# Read + write remote cache
+bazel build //... \
+  --remote_cache=http://localhost:8080/bazel-cache \
+  --remote_timeout=60 \
+  --experimental_remote_cache_compression \
+  --remote_header=Authorization=Bearer\ <YOUR_TOKEN>
+
+# Read-only (disable uploads)
+bazel build //... \
+  --remote_cache=http://localhost:8080/bazel-cache \
+  --remote_upload_local_results=false \
+  --remote_header=Authorization=Bearer\ <YOUR_TOKEN>
+```
+
+Notes:
+
+- HEAD/GET on `/ac/*` and `/cas/*` read entries; PUT writes; DELETE removes entries.
+- Ensure your token has `read` for pulls and `write` for uploads.
+
 ## Storage Layout
 
 Artifacts are stored using hash-based sharding:
@@ -161,14 +239,18 @@ storage/
 ### Project Structure
 ```
 cmd/                    # Application entry point
+├── main.go             # HTTP API server entrypoint
+└── webhook-dispatcher/ # Standalone webhook dispatcher service
 internal/
 ├── artifact/          # Artifact interfaces and factory
 │   └── types/         # Specific artifact implementations
 ├── auth/              # Authentication and authorization
 ├── config/            # Configuration management
 ├── database/          # Database models and operations
+├── messaging/         # Publisher/consumer for RabbitMQ
 ├── repository/        # Repository implementations
 ├── server/            # HTTP server and handlers
+└── webhook/           # Webhook dispatcher library (used by standalone service)
 └── storage/           # Storage interfaces and implementations
 ```
 

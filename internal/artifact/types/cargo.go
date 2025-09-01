@@ -125,14 +125,18 @@ func (c *CargoArtifact) GetMetadata(content io.Reader) (map[string]string, error
 
 // GenerateIndex generates Cargo registry index
 func (c *CargoArtifact) GenerateIndex(artifacts []*artifact.ArtifactInfo) ([]byte, error) {
-	type CargoVersion struct {
-		Name    string `json:"name"`
-		Vers    string `json:"vers"`
-		Deps    []struct{} `json:"deps"`
-		Cksum   string `json:"cksum"`
-		Features map[string][]string `json:"features"`
-		Yanked  bool `json:"yanked"`
-	}
+    // Per Cargo registry-index spec, each line is a JSON object describing a
+    // single version of a crate. We include minimal required fields and set
+    // schema version v=2.
+    type CargoVersion struct {
+        Name     string              `json:"name"`
+        Vers     string              `json:"vers"`
+        Deps     []struct{}          `json:"deps"`
+        Cksum    string              `json:"cksum"`
+        Features map[string][]string `json:"features"`
+        Yanked   bool                `json:"yanked"`
+        V        int                 `json:"v"`
+    }
 
 	if len(artifacts) == 0 {
 		return []byte{}, nil
@@ -140,14 +144,15 @@ func (c *CargoArtifact) GenerateIndex(artifacts []*artifact.ArtifactInfo) ([]byt
 
 	var lines []string
 	for _, art := range artifacts {
-		version := CargoVersion{
-			Name:     art.Name,
-			Vers:     art.Version,
-			Deps:     []struct{}{},
-			Cksum:    art.Checksum,
-			Features: make(map[string][]string),
-			Yanked:   false,
-		}
+        version := CargoVersion{
+            Name:     art.Name,
+            Vers:     art.Version,
+            Deps:     []struct{}{},
+            Cksum:    art.Checksum,
+            Features: make(map[string][]string),
+            Yanked:   art.Yanked,
+            V:        2,
+        }
 		
 		jsonLine, err := json.Marshal(version)
 		if err != nil {
@@ -161,10 +166,12 @@ func (c *CargoArtifact) GenerateIndex(artifacts []*artifact.ArtifactInfo) ([]byt
 
 // GetEndpoints returns Cargo registry standard endpoints
 func (c *CargoArtifact) GetEndpoints() []string {
-	return []string{
-		"GET /api/v1/crates/{crate}",
-		"GET /api/v1/crates/{crate}/{version}/download",
-		"PUT /api/v1/crates/new",
-		"DELETE /api/v1/crates/{crate}/{version}/yank",
-	}
+    return []string{
+        "GET /api/v1/crates/{crate}",
+        "GET /api/v1/crates/{crate}/{version}",
+        "GET /api/v1/crates/{crate}/{version}/download",
+        "PUT /api/v1/crates/new",
+        "DELETE /api/v1/crates/{crate}/{version}/yank",
+        "PUT /api/v1/crates/{crate}/{version}/unyank",
+    }
 }

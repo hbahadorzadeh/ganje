@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ganje-system
+  labels:
+    name: ganje-system
+    app.kubernetes.io/name: ganje
+    app.kubernetes.io/component: system

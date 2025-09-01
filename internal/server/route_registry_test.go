@@ -10,33 +10,63 @@ import (
 )
 
 func TestNewRouteRegistry(t *testing.T) {
-	registry := NewRouteRegistry()
-	
-	assert.NotNil(t, registry)
-	assert.NotNil(t, registry.registrars)
-	
-	// Check that all default registrars are registered
-	supportedTypes := registry.GetSupportedArtifactTypes()
-	expectedTypes := []artifact.ArtifactType{
-		artifact.ArtifactTypeMaven,
-		artifact.ArtifactTypeNPM,
-		artifact.ArtifactTypeDocker,
-		artifact.ArtifactTypeGolang,
-		artifact.ArtifactTypePyPI,
-		artifact.ArtifactTypeHelm,
-		artifact.ArtifactTypeCargo,
-		artifact.ArtifactTypeNuGet,
-		artifact.ArtifactTypeRubyGems,
-		artifact.ArtifactTypeTerraform,
-		artifact.ArtifactTypeAnsible,
-		artifact.ArtifactTypeConan,
-		artifact.ArtifactTypeGeneric,
-	}
-	
-	assert.Len(t, supportedTypes, len(expectedTypes))
-	for _, expectedType := range expectedTypes {
-		assert.Contains(t, supportedTypes, expectedType)
-	}
+    registry := NewRouteRegistry()
+    
+    assert.NotNil(t, registry)
+    assert.NotNil(t, registry.registrars)
+    
+    // Check that all default registrars are registered
+    supportedTypes := registry.GetSupportedArtifactTypes()
+    expectedTypes := []artifact.ArtifactType{
+        artifact.ArtifactTypeMaven,
+        artifact.ArtifactTypeNPM,
+        artifact.ArtifactTypeDocker,
+        artifact.ArtifactTypeGolang,
+        artifact.ArtifactTypePyPI,
+        artifact.ArtifactTypeHelm,
+        artifact.ArtifactTypeCargo,
+        artifact.ArtifactTypeNuGet,
+        artifact.ArtifactTypeRubyGems,
+        artifact.ArtifactTypeTerraform,
+        artifact.ArtifactTypeAnsible,
+        artifact.ArtifactTypeBazel,
+        artifact.ArtifactTypeGeneric,
+    }
+    
+    assert.Len(t, supportedTypes, len(expectedTypes))
+    for _, expectedType := range expectedTypes {
+        assert.Contains(t, supportedTypes, expectedType)
+    }
+}
+
+func TestTerraformRouteRegistrar(t *testing.T) {
+    gin.SetMode(gin.TestMode)
+    registrar := NewTerraformRouteRegistrar()
+
+    assert.Equal(t, artifact.ArtifactTypeTerraform, registrar.GetArtifactType())
+
+    router := gin.New()
+    group := router.Group("/test-terraform")
+    server, _, _, _ := createTestServer()
+
+    registrar.RegisterRoutes(group, server)
+
+    routes := router.Routes()
+    expectedPaths := []string{
+        "/test-terraform/v1/modules/:namespace/:name/:provider/versions",
+        "/test-terraform/v1/modules/:namespace/:name/:provider/:version/download",
+    }
+
+    for _, expectedPath := range expectedPaths {
+        found := false
+        for _, route := range routes {
+            if route.Path == expectedPath {
+                found = true
+                break
+            }
+        }
+        assert.True(t, found, "Expected Terraform route %s should be registered", expectedPath)
+    }
 }
 
 func TestGetRouteRegistrar(t *testing.T) {
@@ -296,7 +326,7 @@ func TestAllArtifactTypeRegistrars(t *testing.T) {
 		artifact.ArtifactTypeRubyGems,
 		artifact.ArtifactTypeTerraform,
 		artifact.ArtifactTypeAnsible,
-		artifact.ArtifactTypeConan,
+		artifact.ArtifactTypeBazel,
 		artifact.ArtifactTypeGeneric,
 	}
 	

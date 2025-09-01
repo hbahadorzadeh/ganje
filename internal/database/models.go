@@ -38,6 +38,7 @@ type ArtifactInfo struct {
 	Path         string    `gorm:"not null;uniqueIndex"`
 	Size         int64     `gorm:"not null"`
 	Checksum     string    `gorm:"not null"`
+	Yanked       bool      `gorm:"not null;default:false"`
 	CreatedAt    time.Time `gorm:"autoCreateTime"`
 	UpdatedAt    time.Time `gorm:"autoUpdateTime"`
 	
@@ -111,6 +112,37 @@ type VirtualRepositoryMapping struct {
 	UpstreamRepo Repository `gorm:"foreignKey:UpstreamRepoID"`
 }
 
+// Webhook defines a repository-level webhook configuration
+type Webhook struct {
+	ID              uint      `gorm:"primaryKey"`
+	RepositoryID    uint      `gorm:"not null;index"`
+	Name            string    `gorm:"not null"`
+	URL             string    `gorm:"not null"`
+	Events          string    `gorm:"type:text"`      // comma-separated: add,remove,change
+	PayloadTemplate string    `gorm:"type:text"`      // Go template text
+	HeadersJSON     string    `gorm:"type:text"`      // JSON of headers map
+	Enabled         bool      `gorm:"not null;default:true"`
+	// Optional credentials
+	BasicUsername   string    `gorm:""`
+	BasicPassword   string    `gorm:""`               // consider encryption at rest
+	BearerToken     string    `gorm:""`
+	SigningSecret   string    `gorm:""`
+	CreatedAt       time.Time `gorm:"autoCreateTime"`
+	UpdatedAt       time.Time `gorm:"autoUpdateTime"`
+}
+
+// WebhookDelivery optionally records deliveries (for observability)
+type WebhookDelivery struct {
+	ID          uint      `gorm:"primaryKey"`
+	WebhookID   uint      `gorm:"not null;index"`
+	Event       string    `gorm:"not null"`
+	StatusCode  int       `gorm:""`
+	Success     bool      `gorm:"index"`
+	Error       string    `gorm:"type:text"`
+	Payload     string    `gorm:"type:text"`
+	CreatedAt   time.Time `gorm:"autoCreateTime"`
+}
+
 // AutoMigrate runs database migrations
 func AutoMigrate(db *gorm.DB) error {
 	return db.AutoMigrate(
@@ -120,5 +152,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&AccessLog{},
 		&CacheEntry{},
 		&VirtualRepositoryMapping{},
+		&Webhook{},
+		&WebhookDelivery{},
 	)
 }

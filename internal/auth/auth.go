@@ -44,9 +44,7 @@ func NewAuthService(jwtSecret, oauthServer string, realms map[string][]Permissio
 // ValidateToken validates JWT token and returns claims
 func (a *AuthService) ValidateToken(tokenString string) (*Claims, error) {
 	// Remove "Bearer " prefix if present
-	if strings.HasPrefix(tokenString, "Bearer ") {
-		tokenString = strings.TrimPrefix(tokenString, "Bearer ")
-	}
+	tokenString = strings.TrimPrefix(tokenString, "Bearer ")
 
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
 		// Validate signing method

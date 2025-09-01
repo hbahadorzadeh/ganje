@@ -15,6 +15,8 @@ type Config struct {
 	Auth         AuthConfig         `yaml:"auth"`
 	Logging      LoggingConfig      `yaml:"logging"`
 	Metrics      MetricsConfig      `yaml:"metrics"`
+	Messaging    MessagingConfig    `yaml:"messaging"`
+	Webhook      WebhookConfig      `yaml:"webhook"`
 	Repositories []RepositoryConfig `yaml:"repositories"`
 }
 
@@ -44,9 +46,17 @@ type StorageConfig struct {
 
 // AuthConfig contains authentication configuration
 type AuthConfig struct {
-	OAuthServer string `yaml:"oauth_server"`
-	JWTSecret   string `yaml:"jwt_secret"`
-	Realms      []Realm `yaml:"realms"`
+	OAuthServer  string     `yaml:"oauth_server"`
+	JWTSecret    string     `yaml:"jwt_secret"`
+	Realms       []Realm    `yaml:"realms"`
+	OIDC         OIDCConfig `yaml:"oidc,omitempty"`
+}
+
+// OIDCConfig contains OIDC client configuration
+type OIDCConfig struct {
+	ClientID     string `yaml:"client_id"`
+	ClientSecret string `yaml:"client_secret"`
+	RedirectURI  string `yaml:"redirect_uri"`
 }
 
 // Realm represents access control realm
@@ -68,6 +78,29 @@ type MetricsConfig struct {
 	Path           string `yaml:"path"`
 	SeparateServer bool   `yaml:"separate_server"`
 	Port           int    `yaml:"port"`
+}
+
+// MessagingConfig contains RabbitMQ settings for event publishing
+type MessagingConfig struct {
+	RabbitMQ RabbitMQConfig `yaml:"rabbitmq"`
+}
+
+type RabbitMQConfig struct {
+	Enabled      bool   `yaml:"enabled"`
+	URL          string `yaml:"url"`
+	Exchange     string `yaml:"exchange"`
+	ExchangeType string `yaml:"exchange_type"`
+	RoutingKey   string `yaml:"routing_key"`
+}
+
+// WebhookConfig controls webhook dispatcher settings
+type WebhookConfig struct {
+	Enabled          bool `yaml:"enabled"`
+	Workers          int  `yaml:"workers"`
+	MaxRetries       int  `yaml:"max_retries"`
+	InitialBackoffMs int  `yaml:"initial_backoff_ms"`
+	MaxBackoffMs     int  `yaml:"max_backoff_ms"`
+	HTTPTimeoutMs    int  `yaml:"http_timeout_ms"`
 }
 
 // RepositoryConfig contains repository configuration

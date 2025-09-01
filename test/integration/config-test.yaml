@@ -1,0 +1,40 @@
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+database:
+  driver: "sqlite"
+  dsn: "test.db"
+
+storage:
+  type: "local"
+  local_path: "./storage"
+
+auth:
+  jwt_secret: "test-secret-key-for-development-only"
+  oauth_server: ""
+  realms:
+    - name: "admins"
+      permissions: ["admin"]
+    - name: "readonly"
+      permissions: ["read"]
+
+logging:
+  level: "info"
+  format: "json"
+  output: "stdout"
+
+metrics:
+  enabled: true
+  path: "/metrics"
+  separate_server: false
+  port: 9090
+
+repositories:
+  - name: "maven-local"
+    type: "local"
+    artifact_type: "maven"
+    
+  - name: "npm-local"
+    type: "local"
+    artifact_type: "npm"

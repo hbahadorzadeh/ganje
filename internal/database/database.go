@@ -6,6 +6,7 @@ import (
 
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
+	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
@@ -17,26 +18,28 @@ type DB struct {
 // New creates a new database connection
 func New(driver, connectionString string) (*DB, error) {
 	var dialector gorm.Dialector
-	
+
 	switch driver {
 	case "postgres":
 		dialector = postgres.Open(connectionString)
 	case "mysql":
 		dialector = mysql.Open(connectionString)
+	case "sqlite":
+		dialector = sqlite.Open(connectionString)
 	default:
 		return nil, fmt.Errorf("unsupported database driver: %s", driver)
 	}
-	
+
 	db, err := gorm.Open(dialector, &gorm.Config{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
-	
+
 	// Run migrations
 	if err := AutoMigrate(db); err != nil {
 		return nil, fmt.Errorf("failed to run migrations: %w", err)
 	}
-	
+
 	return &DB{conn: db}, nil
 }
 
@@ -52,11 +55,11 @@ func (db *DB) GetArtifactByPath(ctx context.Context, repoName, path string) (*Ar
 		Joins("JOIN repositories ON repositories.id = artifact_infos.repository_id").
 		Where("repositories.name = ? AND artifact_infos.path = ?", repoName, path).
 		First(&artifactInfo).Error
-	
+
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return &artifactInfo, nil
 }
 
@@ -67,11 +70,11 @@ func (db *DB) GetArtifactsByRepository(ctx context.Context, repoName string) ([]
 		Joins("JOIN repositories ON repositories.id = artifact_infos.repository_id").
 		Where("repositories.name = ?", repoName).
 		Find(&artifacts).Error
-	
+
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return artifacts, nil
 }
 
@@ -110,14 +113,14 @@ type Statistics struct {
 // GetRepositoryStatistics returns repository statistics
 func (db *DB) GetRepositoryStatistics(ctx context.Context, repoName string) (*Statistics, error) {
 	var stats Statistics
-	
+
 	err := db.conn.WithContext(ctx).
 		Model(&ArtifactInfo{}).
 		Select("COUNT(*) as total_artifacts, SUM(size) as total_size, SUM(pull_count) as pull_count, SUM(push_count) as push_count").
 		Joins("JOIN repositories ON repositories.id = artifact_infos.repository_id").
 		Where("repositories.name = ?", repoName).
 		Scan(&stats).Error
-	
+
 	return &stats, err
 }
 
@@ -208,7 +211,8 @@ func (db *DB) GetAllRepositories() ([]Repository, error) {
 func (db *DB) GetArtifact(ctx context.Context, repositoryName, name, version string) (*ArtifactInfo, error) {
 	var artifact ArtifactInfo
 	err := db.conn.WithContext(ctx).
-		Where("repository_name = ? AND name = ? AND version = ?", repositoryName, name, version).
+		Joins("JOIN repositories ON repositories.id = artifact_infos.repository_id").
+		Where("repositories.name = ? AND artifact_infos.name = ? AND artifact_infos.version = ?", repositoryName, name, version).
 		First(&artifact).Error
 	if err != nil {
 		return nil, err
@@ -216,7 +220,61 @@ func (db *DB) GetArtifact(ctx context.Context, repositoryName, name, version str
 	return &artifact, nil
 }
 
+// UpdateArtifactYanked updates the yanked flag for an artifact version scoped to repository
+func (db *DB) UpdateArtifactYanked(ctx context.Context, repositoryName, name, version string, yanked bool) error {
+	return db.conn.WithContext(ctx).
+		Model(&ArtifactInfo{}).
+		Joins("JOIN repositories ON repositories.id = artifact_infos.repository_id").
+		Where("repositories.name = ? AND artifact_infos.name = ? AND artifact_infos.version = ?", repositoryName, name, version).
+		Update("yanked", yanked).Error
+}
 
+// CreateWebhook creates a webhook for a repository name
+func (db *DB) CreateWebhook(ctx context.Context, repoName string, hook *Webhook) error {
+	var repo Repository
+	if err := db.conn.WithContext(ctx).Where("name = ?", repoName).First(&repo).Error; err != nil {
+		return err
+	}
+	hook.RepositoryID = repo.ID
+	return db.conn.WithContext(ctx).Create(hook).Error
+}
+
+// UpdateWebhook updates webhook fields by ID
+func (db *DB) UpdateWebhook(ctx context.Context, id uint, updates map[string]interface{}) error {
+	return db.conn.WithContext(ctx).Model(&Webhook{}).Where("id = ?", id).Updates(updates).Error
+}
+
+// DeleteWebhook deletes a webhook by ID
+func (db *DB) DeleteWebhook(ctx context.Context, id uint) error {
+	return db.conn.WithContext(ctx).Where("id = ?", id).Delete(&Webhook{}).Error
+}
+
+// GetWebhook retrieves a webhook by ID
+func (db *DB) GetWebhook(ctx context.Context, id uint) (*Webhook, error) {
+	var hook Webhook
+	if err := db.conn.WithContext(ctx).Where("id = ?", id).First(&hook).Error; err != nil {
+		return nil, err
+	}
+	return &hook, nil
+}
+
+// ListWebhooksByRepository lists webhooks by repository name
+func (db *DB) ListWebhooksByRepository(ctx context.Context, repoName string) ([]*Webhook, error) {
+	var hooks []*Webhook
+	err := db.conn.WithContext(ctx).
+		Joins("JOIN repositories ON repositories.id = webhooks.repository_id").
+		Where("repositories.name = ?", repoName).
+		Find(&hooks).Error
+	if err != nil {
+		return nil, err
+	}
+	return hooks, nil
+}
+
+// RecordWebhookDelivery stores a delivery log entry
+func (db *DB) RecordWebhookDelivery(ctx context.Context, delivery *WebhookDelivery) error {
+	return db.conn.WithContext(ctx).Create(delivery).Error
+}
 
 // Close closes database connection
 func (db *DB) Close() error {

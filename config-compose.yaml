@@ -1,0 +1,65 @@
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+database:
+  driver: "mysql"
+  host: "mariadb"
+  port: 3306
+  username: "ganje"
+  password: "password"
+  database: "ganje"
+  ssl_mode: ""
+
+storage:
+  type: "local"
+  local_path: "/var/lib/ganje/storage"
+
+auth:
+  # Dex OAuth server configuration
+  oauth_server: "http://dex:5556"
+  jwt_secret: "dev-jwt-secret"
+  oidc:
+    client_id: "ganje-backend"
+    client_secret: "ZXhhbXBsZS1iYWNrZW5kLXNlY3JldA"
+    redirect_uri: "http://localhost:8080/api/v1/auth/callback"
+  realms:
+    - name: "developers"
+      permissions: ["read", "write"]
+    - name: "admins"
+      permissions: ["admin"]
+
+logging:
+  level: "info"
+  format: "json"
+  output: "stdout"
+
+metrics:
+  enabled: true
+  path: "/metrics"
+  separate_server: false
+  port: 9090
+
+messaging:
+  rabbitmq:
+    enabled: true
+    url: "amqp://guest:guest@rabbitmq:5672/"
+    exchange: "ganje.events"
+    exchange_type: "topic"
+    routing_key: "ganje.events"
+
+webhook:
+  enabled: true
+  workers: 2
+  max_retries: 5
+  initial_backoff_ms: 500
+  max_backoff_ms: 10000
+  http_timeout_ms: 10000
+
+repositories:
+  - name: "generic-local"
+    type: "local"
+    artifact_type: "generic"
+  - name: "maven-local"
+    type: "local"
+    artifact_type: "maven"

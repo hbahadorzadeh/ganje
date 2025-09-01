@@ -35,16 +35,17 @@ func (a *AnsibleArtifact) GetPath() string {
 	return fmt.Sprintf("download/%s-%s-%s.tar.gz", a.metadata.Group, a.metadata.Name, a.metadata.Version)
 }
 
-// GetIndexPath returns the index path for Ansible Galaxy
+// GetIndexPath returns the collection index path per Galaxy NG API v3
+// /api/v3/plugin/ansible/content/published/collections/index/{namespace}/{name}/
 func (a *AnsibleArtifact) GetIndexPath() string {
-	return fmt.Sprintf("api/v2/collections/%s/%s/", a.metadata.Group, a.metadata.Name)
+	return fmt.Sprintf("api/v3/plugin/ansible/content/published/collections/index/%s/%s/", a.metadata.Group, a.metadata.Name)
 }
 
 // ValidatePath validates Ansible collection path
 func (a *AnsibleArtifact) ValidatePath(path string) error {
 	patterns := []string{
 		`^download/[a-zA-Z0-9._-]+-[a-zA-Z0-9._-]+-[a-zA-Z0-9._-]+\.tar\.gz$`,
-		`^api/v2/collections/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/$`,
+		`^api/v3/plugin/ansible/content/published/collections/index/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/$`,
 	}
 
 	for _, pattern := range patterns {
@@ -121,18 +122,22 @@ func (a *AnsibleArtifact) GetMetadata(content io.Reader) (map[string]string, err
 	}, nil
 }
 
-// GenerateIndex generates Ansible Galaxy collection metadata
+// GenerateIndex generates collection metadata per Galaxy NG API v3 `Get a specific collection`
+// Example schema fields: href, namespace, name, deprecated, versions_url, highest_version { href, version }, created_at, updated_at
 func (a *AnsibleArtifact) GenerateIndex(artifacts []*artifact.ArtifactInfo) ([]byte, error) {
-	type AnsibleVersion struct {
-		Version string `json:"version"`
+	type HighestVersion struct {
 		Href    string `json:"href"`
+		Version string `json:"version"`
 	}
-
-	type AnsibleCollection struct {
-		Namespace   string           `json:"namespace"`
-		Name        string           `json:"name"`
-		Description string           `json:"description"`
-		Versions    []AnsibleVersion `json:"versions"`
+	type Collection struct {
+		Href          string         `json:"href"`
+		Namespace     string         `json:"namespace"`
+		Name          string         `json:"name"`
+		Deprecated    bool           `json:"deprecated"`
+		VersionsURL   string         `json:"versions_url"`
+		Highest       *HighestVersion `json:"highest_version"`
+		CreatedAt     string         `json:"created_at"`
+		UpdatedAt     string         `json:"updated_at"`
 	}
 
 	if len(artifacts) == 0 {
@@ -142,35 +147,49 @@ func (a *AnsibleArtifact) GenerateIndex(artifacts []*artifact.ArtifactInfo) ([]b
 	first := artifacts[0]
 	namespace := first.Metadata["namespace"]
 	if namespace == "" {
+		namespace = a.metadata.Group
+	}
+	if namespace == "" {
 		namespace = "default"
 	}
-	collection := AnsibleCollection{
-		Namespace:   namespace,
-		Name:        first.Name,
-		Description: "Ansible Galaxy Collection",
-		Versions:    make([]AnsibleVersion, 0, len(artifacts)),
-	}
+	name := first.Name
+	base := fmt.Sprintf("/api/v3/plugin/ansible/content/published/collections/index/%s/%s/", namespace, name)
 
+	// choose highest version lexicographically for determinism (simplified)
+	highest := ""
 	for _, art := range artifacts {
-		artNamespace := art.Metadata["namespace"]
-		if artNamespace == "" {
-			artNamespace = "default"
+		if art.Name != name {
+			continue
 		}
-		version := AnsibleVersion{
-			Version: art.Version,
-			Href:    fmt.Sprintf("/download/%s-%s-%s.tar.gz", artNamespace, art.Name, art.Version),
+		if highest == "" || art.Version > highest {
+			highest = art.Version
 		}
-		collection.Versions = append(collection.Versions, version)
 	}
 
-	return json.MarshalIndent(collection, "", "  ")
+	coll := Collection{
+		Href:        base,
+		Namespace:   namespace,
+		Name:        name,
+		Deprecated:  false,
+		VersionsURL: base + "versions/",
+		CreatedAt:   "",
+		UpdatedAt:   "",
+	}
+	if highest != "" {
+		coll.Highest = &HighestVersion{
+			Href:    base + "versions/" + highest + "/",
+			Version: highest,
+		}
+	}
+	return json.Marshal(coll)
 }
 
 // GetEndpoints returns Ansible Galaxy standard endpoints
 func (a *AnsibleArtifact) GetEndpoints() []string {
 	return []string{
-		"GET /api/v2/collections/{namespace}/{name}/",
+		"GET /api/v3/plugin/ansible/content/published/collections/index/{namespace}/{name}/",
 		"GET /download/{namespace}-{name}-{version}.tar.gz",
-		"POST /api/v2/collections/",
+		// API v3 uploads are different; keeping placeholder for completeness
+		"POST /api/v3/plugin/ansible/content/published/collections/",
 	}
 }

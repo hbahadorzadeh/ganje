@@ -1,0 +1,126 @@
+version: '3.8'
+
+services:
+  mariadb:
+    image: mariadb:11
+    container_name: mariadb
+    environment:
+      MARIADB_DATABASE: ganje
+      MARIADB_USER: ganje
+      MARIADB_PASSWORD: password
+      MARIADB_ROOT_PASSWORD: rootpassword
+    ports:
+      - "3306:3306"
+    volumes:
+      - mariadb-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mariadb-admin ping -h 127.0.0.1 --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - test-network
+  # Ganje artifact server for testing
+  ganje-server:
+    build:
+      context: ../../
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - ../../config-test.yaml:/app/config.yaml
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - test-network
+
+  # Maven container for Maven artifact testing
+  maven-client:
+    image: maven:3.9.11-amazoncorretto-17
+    depends_on:
+      ganje-server:
+        condition: service_healthy
+    volumes:
+      - ./maven-test:/workspace
+      - ./maven-settings.xml:/root/.m2/settings.xml
+    working_dir: /workspace
+    command: tail -f /dev/null  # Keep container running
+    networks:
+      - test-network
+
+  # Node.js container for NPM testing
+  npm-client:
+    image: node:18-alpine
+    depends_on:
+      ganje-server:
+        condition: service_healthy
+    volumes:
+      - ./npm-test:/workspace
+    working_dir: /workspace
+    command: tail -f /dev/null
+    networks:
+      - test-network
+
+  # Go container for Go modules testing
+  go-client:
+    image: golang:1.21-alpine
+    depends_on:
+      ganje-server:
+        condition: service_healthy
+    volumes:
+      - ./go-test:/workspace
+    working_dir: /workspace
+    environment:
+      - GOPROXY=http://ganje-server:8080/go-repo,direct
+      - GOSUMDB=off
+    command: tail -f /dev/null
+    networks:
+      - test-network
+
+  # Rust container for Cargo testing
+  cargo-client:
+    image: rust:1.70-alpine
+    depends_on:
+      ganje-server:
+        condition: service_healthy
+    volumes:
+      - ./cargo-test:/workspace
+      - ./cargo-config.toml:/usr/local/cargo/config.toml
+    working_dir: /workspace
+    command: tail -f /dev/null
+    networks:
+      - test-network
+
+  # Docker-in-Docker for Docker registry testing
+  docker-client:
+    image: docker:24-dind
+    privileged: true
+    depends_on:
+      ganje-server:
+        condition: service_healthy
+    volumes:
+      - ./docker-test:/workspace
+    working_dir: /workspace
+    command: tail -f /dev/null
+    networks:
+      - test-network
+
+  # Helm container for Helm chart testing
+  helm-client:
+    image: alpine/helm:3.12.0
+    depends_on:
+      ganje-server:
+        condition: service_healthy
+    volumes:
+      - ./helm-test:/workspace
+    working_dir: /workspace
+    command: tail -f /dev/null
+    networks:
+      - test-network
+
+networks:
+  test-network:
+    driver: bridge
